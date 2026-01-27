@@ -1,0 +1,34 @@
+# requirements.txt - Dependências do Projeto SAM Glaciar Schiaparelli
+# 
+# Instalação:
+#   pip install -r requirements.txt
+#
+# Ou criar ambiente conda:
+#   conda create -n sam_glaciar python=3.10
+#   conda activate sam_glaciar
+#   conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia
+#   pip install -r requirements.txt
+
+# Core
+numpy>=1.24.0
+opencv-python>=4.8.0
+tqdm>=4.65.0
+
+# Geospatial
+rasterio>=1.3.0
+geopandas>=0.14.0
+shapely>=2.0.0
+
+# SAM (Segment Anything Model)
+segment-anything @ git+https://github.com/facebookresearch/segment-anything.git
+
+# PyTorch (instalar via conda para melhor compatibilidade CUDA)
+# torch>=2.0.0
+# torchvision>=0.15.0
+
+# Visualização
+matplotlib>=3.7.0
+
+# Opcional - para notebooks
+# jupyter>=1.0.0
+# ipywidgets>=8.0.0

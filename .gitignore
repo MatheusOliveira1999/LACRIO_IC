@@ -1,0 +1,123 @@
+# ============================================================
+# GITIGNORE - Projeto LACRIO IC - SAM Glaciar Schiaparelli
+# ============================================================
+
+# ============================================================
+# ARQUIVOS GRANDES (Dados Geoespaciais)
+# ============================================================
+
+# Mosaicos RGB (muito pesados ~20GB)
+mosaicos_DEMs_Schiaparelli/*.tif
+mosaicos_DEMs_Schiaparelli/*.TIF
+mosaicos_DEMs_Schiaparelli/*.tiff
+
+# Arquivos auxiliares de raster
+*.aux.xml
+*.ovr
+*.xml
+
+# Tiles gerados (podem ser regenerados)
+tiles/
+
+# Máscaras geradas
+masks/
+
+# Resultados (podem ser regenerados)
+results/
+
+# Dados intermediários
+data/
+
+# ============================================================
+# MODELOS DE MACHINE LEARNING
+# ============================================================
+
+# Checkpoints SAM (375MB - 2.4GB)
+*.pth
+*.pt
+*.onnx
+*.h5
+*.hdf5
+*.weights
+
+# Modelos treinados
+models/
+
+# ============================================================
+# PYTHON
+# ============================================================
+
+# Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.conda/
+
+# Jupyter Notebooks checkpoints
+.ipynb_checkpoints/
+
+# ============================================================
+# IDE E EDITORES
+# ============================================================
+
+# VSCode
+.vscode/
+
+# PyCharm
+.idea/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# ============================================================
+# SISTEMA OPERACIONAL
+# ============================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+.fuse_hidden*
+.Trash-*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ============================================================
+# OUTROS
+# ============================================================
+
+# Logs
+*.log
+logs/
+
+# Temporários
+*.tmp
+*.temp
+.cache/
+
+# Claude/Gemini artifacts (local only)
+.claude/
+.gemini/
+
+# Arquivos de teste
+test_*.png
+debug_*.png
