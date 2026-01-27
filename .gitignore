@@ -11,6 +11,13 @@ mosaicos_DEMs_Schiaparelli/*.tif
 mosaicos_DEMs_Schiaparelli/*.TIF
 mosaicos_DEMs_Schiaparelli/*.tiff
 
+
+# Tiles
+
+/home/matheus/Documents/GitHub/LACRIO IC/tiles/*.png
+/home/matheus/Documents/GitHub/LACRIO IC/tiles/*.tif
+/home/matheus/Documents/GitHub/LACRIO IC/tiles/*.tiff
+
 # Arquivos auxiliares de raster
 *.aux.xml
 *.ovr
