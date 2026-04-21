@@ -6,7 +6,7 @@
 **Vigência:** Set/2025 – Ago/2026  
 **Início Implementação:** 26 de Janeiro de 2026  
 **Término Previsto:** 26 de Março de 2026  
-**Status Global:** 🟢 Fase 1 Concluída
+**Status Global:** 🟡 Correções v3 aplicadas (sombra DEM) | Aguardando re-treino e validação
 
 ---
 
@@ -26,16 +26,16 @@
 | Etapa | Status | Início | Fim | Horas |
 |-------|--------|--------|-----|-------|
 | Fase 1 - Setup e Preparação | 🟢 Concluído | 26/01 | 26/01 | 10h |
-| Fase 2 - Anotação Interativa | 🔴 Não Iniciado | - | - | 8h |
-| Fase 3 - Fine-tuning SAM | 🔴 Não Iniciado | - | - | 5h |
-| Fase 4 - Inferência ML | 🔴 Não Iniciado | - | - | 10h |
-| Fase 5 - Reconstrução | 🔴 Não Iniciado | - | - | 8h |
-| Fase 6 - Validação | 🔴 Não Iniciado | - | - | 6h |
+| Fase 2 - Anotação Interativa | 🟢 Concluído | 27/01 | 02/02 | 8h |
+| Fase 3 - Fine-tuning SAM | 🟡 Script Pronto (v3: hard neg. sombra) | 02/02 | - | 5h |
+| Fase 4 - Inferência ML | 🟡 Script Pronto (v3: sombra DEM + textura) | 02/02 | - | 10h |
+| Fase 5 - Reconstrução | 🟡 Script Pronto | 02/02 | - | 8h |
+| Fase 6 - Validação | 🟡 Script Pronto | 02/02 | - | 6h |
 | **Fase 7A - Análise DEMs (NOVO)** | 🔴 Não Iniciado | - | - | 10h |
 | Fase 7B - Análise Temporal | 🔴 Não Iniciado | - | - | 8h |
 | Fase 8 - Documentação | 🔴 Não Iniciado | - | - | 10h |
 
-**Progresso Geral:** █░░░░░░░░░ 12%
+**Progresso Geral:** ███░░░░░░░ 30%
 
 ---
 
@@ -62,11 +62,11 @@
 
 | Tarefa | Status | Descrição |
 |--------|--------|-----------|
-| [ ] 2.1 `02_sam_interactive.py` | 🔴 | Interface de anotação |
-| [ ] 2.2 Anotar lagos (20+ tiles) | 🔴 | Feições azuis/turquesa |
-| [ ] 2.3 Anotar fendas (15+ tiles) | 🔴 | Feições lineares escuras |
-| [ ] 2.4 Anotar canais (15+ tiles) | 🔴 | Rede de drenagem |
-| [ ] 2.5 Revisar qualidade | 🔴 | Verificar anotações |
+| [x] 2.1 `02_sam_interactive.py` | 🟢 | Interface de anotação |
+| [x] 2.2 Anotar lagos (51 tiles) | 🟢 | 51 anotações criadas |
+| [x] 2.3 Anotar fendas (51 tiles) | 🟢 | 51 anotações criadas |
+| [x] 2.4 Anotar canais (54 tiles) | 🟢 | 54 anotações criadas |
+| [x] 2.5 Revisar qualidade | 🟢 | 156 anotações totais |
 
 **Entregável:** 50+ máscaras em `/masks/YYYY/annotations/`
 
@@ -77,11 +77,11 @@
 
 | Tarefa | Status | Descrição |
 |--------|--------|-----------|
-| [ ] 3.1 `03_finetune_sam.py` | 🔴 | Script de treinamento |
-| [ ] 3.2 GlacierDataset | 🔴 | Carregar pares tile-máscara |
-| [ ] 3.3 Treinar lagos | 🔴 | 20 épocas, lr=1e-4 |
-| [ ] 3.4 Treinar fendas | 🔴 | Ajustar hiperparâmetros |
-| [ ] 3.5 Treinar canais | 🔴 | Validar cada feição |
+| [x] 3.1 `03_finetune_sam.py` | 🟢 | Script implementado |
+| [x] 3.2 GlacierDataset | 🟢 | Dataset + DataLoader prontos |
+| [ ] 3.3 Treinar lagos | 🔴 | Executar treinamento |
+| [ ] 3.4 Treinar fendas | 🔴 | Executar treinamento |
+| [ ] 3.5 Treinar canais | 🔴 | Executar treinamento |
 
 **Entregável:** Modelo em `/models/sam_finetuned_best.pth`
 
@@ -92,8 +92,8 @@
 
 | Tarefa | Status | Descrição |
 |--------|--------|-----------|
-| [ ] 4.1 `04_inference.py` | 🔴 | Script de inferência |
-| [ ] 4.2-4.6 Processar 2016-2020 | 🔴 | Lagos, fendas, canais |
+| [x] 4.1 `04_inference.py` | 🟢 | Script implementado |
+| [ ] 4.2-4.6 Processar 2016-2020 | 🔴 | Executar inferência |
 
 **Entregável:** Máscaras em `/masks/YYYY/{feature}/`
 
@@ -104,8 +104,8 @@
 
 | Tarefa | Status | Descrição |
 |--------|--------|-----------|
-| [ ] 5.1 `05_reconstruct_mosaic.py` | 🔴 | Reconstrução |
-| [ ] 5.2-5.4 Reconstruir feições | 🔴 | GeoTIFF com CRS |
+| [x] 5.1 `05_reconstruct_mosaic.py` | 🟢 | Script implementado |
+| [ ] 5.2-5.4 Reconstruir feições | 🔴 | Executar reconstrução |
 | [ ] 5.5 Pós-processamento | 🔴 | Morfologia, limpeza |
 
 **Entregável:** Mosaicos em `/results/YYYY/`
@@ -117,6 +117,7 @@
 
 | Tarefa | Status | Descrição |
 |--------|--------|-----------|
+| [x] 6.0 `06_validate.py` | 🟢 | Script implementado |
 | [ ] 6.1 F1-score lagos | 🔴 | Meta: 85-90% |
 | [ ] 6.2 F1-score fendas | 🔴 | Meta: 80-85% |
 | [ ] 6.3 F1-score canais | 🔴 | Meta: 75-85% |
@@ -185,12 +186,14 @@
 
 ```
 LACRIO IC/
-├── config.py                    # ✅ Configurações
+├── config.py                    # ✅ Configurações (v3: constantes sombra)
 ├── 01_create_tiles.py           # ✅ Tiling
 ├── 02_sam_interactive.py        # Anotação
-├── 03_finetune_sam.py           # Fine-tuning
-├── 04_inference.py              # Inferência
-├── 05_reconstruct_mosaic.py     # Reconstrução
+├── 03_finetune_sam.py           # ✅ Fine-tuning (v3: hard negatives sombra)
+├── 04_inference.py              # ✅ Inferência (v3: subtração sombra DEM)
+├── 05_reconstruct_mosaic.py     # ✅ Reconstrução
+├── 06_validate.py               # ✅ Validação (F1/IoU)
+├── shadow_utils.py              # 🆕 Detecção de sombra topográfica (DEM)
 ├── 06_dem_analysis.py           # 🆕 Análise DEMs/Ablação
 ├── mosaicos_DEMs_Schiaparelli/  # Dados fonte (.tif)
 ├── tiles/                       # ✅ Tiles RGB
@@ -206,7 +209,7 @@ LACRIO IC/
 | Marco | Data Prevista | Status |
 |-------|---------------|--------|
 | M1: Ambiente configurado | 01/02/2026 | 🟢 26/01 |
-| M2: Anotações completas | 08/02/2026 | 🔴 |
+| M2: Anotações completas | 08/02/2026 | 🟢 02/02 |
 | M3: Modelo treinado | 15/02/2026 | 🔴 |
 | M4: Inferência completa | 22/02/2026 | 🔴 |
 | M5: Mosaicos reconstruídos | 01/03/2026 | 🔴 |
@@ -223,6 +226,15 @@ LACRIO IC/
 - **26/01/2026:** Fase 1 concluída - 21.798 tiles gerados
 - **27/01/2026:** Projeto alinhado com edital da bolsa IC
 - **27/01/2026:** Adicionada Fase 7A (Análise DEMs/Ablação)
+- **27/01/2026:** `02_sam_interactive.py` implementado - Fase 2.1 concluída
+- **02/02/2026:** Fase 2 concluída - 156 anotações (51 lagos, 51 fendas, 54 canais)
+- **02/02/2026:** Scripts Fases 3-6 implementados (03_finetune, 04_inference, 05_reconstruct, 06_validate)
+- **04/02/2026:** Correções v3 - Máscara de sombra topográfica (DEM-based):
+  - `shadow_utils.py` criado (hillshade Horn, filtro textura, cobertura sombra)
+  - `04_inference.py` atualizado: subtração sombra + filtro textura + fix `multimask_output`
+  - `03_finetune_sam.py` atualizado: hard negatives de sombra (50% dos negativos)
+  - `config.py` atualizado: constantes de detecção de sombra
+  - Referências: Stearns et al. (2023), Chai et al. (2025) para embasamento
 
 ### Decisões Técnicas
 - Modelo SAM: `vit_b` (dev) / `vit_h` (prod)
@@ -233,7 +245,8 @@ LACRIO IC/
 1. Volume de dados (~25 GB tiles)
 2. Tempo de inferência GPU
 3. Alinhamento DEMs multitemporais
+4. Sombras topográficas confundidas com lagos (mitigado na v3 com máscara DEM)
 
 ---
 
-*Última atualização: 27/01/2026*
+*Última atualização: 04/02/2026*

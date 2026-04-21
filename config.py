@@ -33,7 +33,17 @@ class Config:
     # =========================================================================
     # Opções: "vit_b" (rápido), "vit_l" (médio), "vit_h" (preciso)
     MODEL_TYPE = "vit_b"
-    SAM_CHECKPOINT = PROJECT_DIR / "sam_vit_b_01ec64.pth"
+
+    # SAM-HQ: mascaras de maior qualidade, especialmente bordas finas
+    # Ref: Ke et al. (2023) "Segment Anything in High Quality" NeurIPS
+    USE_SAM_HQ = True   # SAM-HQ ativado
+
+    # Checkpoints
+    SAM_CHECKPOINT_STANDARD = PROJECT_DIR / "sam_vit_b_01ec64.pth"
+    SAM_HQ_CHECKPOINT = PROJECT_DIR / "sam_hq_vit_b.pth"
+
+    # Selecao automatica do checkpoint
+    SAM_CHECKPOINT = SAM_HQ_CHECKPOINT if USE_SAM_HQ else SAM_CHECKPOINT_STANDARD
     
     # Device (CUDA se disponível)
     DEVICE = "cuda" if TORCH_AVAILABLE and torch.cuda.is_available() else "cpu"
@@ -78,8 +88,8 @@ class Config:
             "description": "Lagos e poças supraglaciais",
             "color": (0, 0, 255),      # Azul (BGR)
             "color_rgb": (0, 0, 255),  # Azul (RGB)
-            "min_area": 50,            # Área mínima em pixels
-            "max_area": 50000          # Área máxima em pixels
+            "min_area": 20,            # Área mínima em pixels (reduzido para captar poças)
+            "max_area": 100000         # Área máxima em pixels (ampliado para lagos grandes)
         },
         "crevasses": {
             "description": "Fendas no gelo",
@@ -98,12 +108,77 @@ class Config:
     }
     
     # =========================================================================
+    # NORMALIZAÇÃO SAM (ImageNet stats usadas pelo ViT pré-treinado)
+    # =========================================================================
+    PIXEL_MEAN = [123.675, 116.28, 103.53]
+    PIXEL_STD = [58.395, 57.12, 57.375]
+
+    # =========================================================================
     # TREINAMENTO
     # =========================================================================
     BATCH_SIZE = 4
-    LEARNING_RATE = 1e-4
-    EPOCHS = 20
+    LEARNING_RATE = 1e-5           # Reduzido de 1e-4 para evitar colapso do decoder
+    EPOCHS = 50                    # Mais epocas com LR menor
     TRAIN_VAL_SPLIT = 0.8
+
+    # Warmup: LR cresce linearmente de 0 ate LEARNING_RATE nas primeiras epocas
+    WARMUP_EPOCHS = 5
+
+    # Early stopping: para o treino se val_dice nao melhora por N epocas
+    EARLY_STOPPING_PATIENCE = 10
+    EARLY_STOPPING_MIN_DELTA = 0.001  # melhoria minima para considerar progresso
+
+    # =========================================================================
+    # DATA AUGMENTATION (Etapa 3)
+    # =========================================================================
+    # Ativar augmentacao requer encoding on-the-fly (encoder roda durante treino)
+    # VRAM: ~3 GB com batch_size=1 (encoder fp16 + decoder fp32)
+    USE_AUGMENTATION = True         # Ativado por padrao (melhoria comprovada)
+
+    # Copy-Paste Augmentation: recorta feicoes de tiles positivos e cola em
+    # tiles negativos, multiplicando o dataset efetivo por 2-3x.
+    # Ref: Ghiasi et al. (2021) "Simple Copy-Paste is a Strong Data Augmentation"
+    USE_COPY_PASTE = True
+    COPY_PASTE_PROB = 0.5           # probabilidade de aplicar copy-paste por amostra
+
+    # =========================================================================
+    # LoRA - Low-Rank Adaptation do encoder (Etapa 4)
+    # =========================================================================
+    # Injeta matrizes de baixo rank nas projecoes QKV do ViT encoder
+    # Parametros extras: ~0.3M (vs ~4M decoder). Total ~4.3M treinavel.
+    # Pre-requisito: USE_AUGMENTATION=True (encoding on-the-fly)
+    # VRAM: ~3-4 GB com batch_size=1
+    USE_LORA = False
+    LORA_RANK = 4              # rank das matrizes LoRA (4-8 recomendado)
+    LORA_ALPHA = 16            # fator de escala (alpha/r)
+    LORA_DROPOUT = 0.1         # dropout nas camadas LoRA
+    LORA_ENCODER_LR = 1e-5    # LR diferenciada para LoRA (10x menor que decoder)
+
+    # =========================================================================
+    # INFERENCIA AVANCADA
+    # =========================================================================
+    # TTA (Test-Time Augmentation): media de predicoes com flips/rotacao
+    # Melhora IoU em +2-4% ao custo de 4x mais tempo de inferencia
+    USE_TTA = True
+    TTA_TRANSFORMS = ["original", "hflip", "vflip", "rot180"]
+
+    # Refinamento 2-pass: usa mascara do 1o pass como prompt para o 2o
+    USE_MASK_REFINEMENT = True
+
+    # Filtro de slope (DEM) para lakes: rejeita deteccoes em areas ingremes
+    # Lagos nao existem em slopes > threshold (a agua escorre)
+    USE_SLOPE_FILTER = True
+    SLOPE_FILTER_MAX_DEGREES = 15.0  # graus
+
+    # =========================================================================
+    # DETECÇÃO DE SOMBRA (DEM-based)
+    # =========================================================================
+    # Ângulos solares típicos para Tierra del Fuego (~54°S, verão austral)
+    # Sol sempre ao norte no hemisfério sul
+    SHADOW_SOLAR_AZIMUTHS = [330, 0, 30]    # graus (0=Norte, sentido horário)
+    SHADOW_SOLAR_ALTITUDES = [30, 40, 50]   # graus acima do horizonte
+    SHADOW_HILLSHADE_THRESHOLD = 80         # hillshade < threshold = sombra
+    SHADOW_TEXTURE_MIN_VARIANCE = 15.0      # variância mínima para manter componente
     
     # =========================================================================
     # MÉTODOS
@@ -156,11 +231,14 @@ class Config:
         print("CONFIGURAÇÃO DO PROJETO - SAM GLACIAR SCHIAPARELLI")
         print("=" * 60)
         print(f"Diretório do projeto: {cls.PROJECT_DIR}")
-        print(f"Modelo SAM: {cls.MODEL_TYPE}")
+        print(f"Modelo SAM: {cls.MODEL_TYPE} ({'HQ' if cls.USE_SAM_HQ else 'standard'})")
+        print(f"Checkpoint: {cls.SAM_CHECKPOINT.name}")
         print(f"Device: {cls.DEVICE}")
         print(f"Tile size: {cls.TILE_SIZE}x{cls.TILE_SIZE} (overlap: {cls.OVERLAP})")
         print(f"Anos disponíveis: {cls.YEARS}")
         print(f"Feições alvo: {list(cls.FEATURES.keys())}")
+        print(f"Augmentation: {'SIM' if cls.USE_AUGMENTATION else 'NAO'}")
+        print(f"LoRA: {'SIM (r={}, alpha={})'.format(cls.LORA_RANK, cls.LORA_ALPHA) if cls.USE_LORA else 'NAO'}")
         print("=" * 60)
 
 

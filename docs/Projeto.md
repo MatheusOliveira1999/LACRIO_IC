@@ -1118,26 +1118,60 @@ if __name__ == "__main__":
 
 ---
 
-## 7. Referências
+## 7. Detecção de Sombra Topográfica (v3)
 
-1. Kirillov, A., et al. (2023). Segment Anything. ICCV 2023. https://segment-anything.com
-2. Chai, M., et al. (2025). Potential of SAM for supraglacial lakes. Int. J. Digital Earth. https://doi.org/10.1080/17538947.2025.2554312
-3. Baraka, S., et al. (2023). SAM in Glaciology. Journal of Glaciology. https://doi.org/10.1017/jog.2023.87
+### Problema
+Sombras topográficas e lagos supraglaciais compartilham assinatura espectral em RGB (regiões escuras com tom azulado), causando falsos positivos na detecção de lagos (F1=0.19 na v2).
+
+### Solução implementada (`shadow_utils.py`)
+
+1. **Hillshade de Horn (1981):** Calcula iluminação solar pixel-a-pixel usando o DEM (~22cm/pixel)
+2. **9 ângulos solares:** Interseção conservadora de 3 azimutes (330°, 0°, 30°) × 3 altitudes (30°, 40°, 50°) para Tierra del Fuego ~54°S
+3. **Filtro de textura:** Variância local para distinguir sombras (uniformes) de lagos (reflexos/ondulações)
+4. **Hard negatives de sombra no treino:** 50% dos negativos são tiles com alta cobertura de sombra
+
+### Pipeline v3
+
+```
+Tile RGB (512x512)
+    ↓
+SAM fine-tuned (multimask_output=False) → máscara bruta
+    ↓
+Filtro espectral (azul/vermelho, brilho) → remove não-água
+    ↓
+Subtração sombra DEM (hillshade < 80) → remove sombras topográficas
+    ↓
+Filtro textura (variância < 15.0) → remove regiões uniformes residuais
+    ↓
+Máscara final de lagos
+```
 
 ---
 
-## 8. Estrutura Final do Projeto
+## 8. Referências
+
+1. Kirillov, A., et al. (2023). Segment Anything. ICCV 2023. https://segment-anything.com
+2. Chai, M., et al. (2025). Potential of SAM for supraglacial lakes. Int. J. Digital Earth. https://doi.org/10.1080/17538947.2025.2554312
+3. Stearns, L.A., et al. (2023). Segment Anything in Glaciology. Journal of Glaciology. https://doi.org/10.1017/jog.2023.87
+4. Exploring SAM Foundation Models for Crevasse Drone Image Segmentation (2024). OpenReview. https://openreview.net/forum?id=CGkyjTXomz
+5. Horn, B.K.P. (1981). Hill shading and the reflectance map. Proceedings of the IEEE, 69(1), 14-47.
+
+---
+
+## 9. Estrutura Final do Projeto
 
 ```
-mosaicos_DEMs_Schiaparelli/
-├── config.py                    # Configurações
+LACRIO IC/
+├── config.py                    # Configurações (v3: constantes sombra)
 ├── 01_create_tiles.py           # Preparação de dados
 ├── 02_sam_interactive.py        # Anotação interativa
-├── 03_finetune_sam.py           # Fine-tuning
-├── 04_inference.py              # Inferência
+├── 03_finetune_sam.py           # Fine-tuning (v3: hard neg. sombra)
+├── 04_inference.py              # Inferência (v3: subtração sombra DEM)
 ├── 05_reconstruct_mosaic.py     # Reconstrução
+├── 06_validate.py               # Validação (F1/IoU)
+├── shadow_utils.py              # Detecção de sombra topográfica (DEM)
 ├── sam_vit_b_01ec64.pth         # Checkpoint SAM
-├── data/                        # Dados originais
+├── mosaicos_DEMs_Schiaparelli/  # Mosaicos RGB + DEMs (.tif)
 ├── tiles/                       # Tiles por ano
 │   ├── 2016/
 │   ├── 2017/
@@ -1150,9 +1184,10 @@ mosaicos_DEMs_Schiaparelli/
 │   │   └── channels/
 │   └── ...
 ├── models/                      # Modelos treinados
-│   ├── sam_finetuned_best.pth
-│   └── sam_finetuned_final.pth
+│   ├── sam_finetuned_lakes_best.pth
+│   └── sam_finetuned_lakes_final.pth
 └── results/                     # Resultados finais
+    ├── shadow_mask_2016.png     # Máscara de sombra (verificação)
     ├── 2016/
     │   ├── lakes_mask.tif
     │   ├── crevasses_mask.tif
