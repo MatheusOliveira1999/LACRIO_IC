@@ -23,7 +23,8 @@ from tqdm import tqdm
 from config import Config
 
 
-def reconstruct_mosaic(feature: str, year: int):
+def reconstruct_mosaic(feature: str, year: int, masks_subdir_suffix: str = "",
+                       output_suffix: str = ""):
     """Reconstrói mosaico GeoTIFF a partir das máscaras individuais dos tiles.
 
     Algoritmo:
@@ -57,7 +58,7 @@ def reconstruct_mosaic(feature: str, year: int):
     print(f"  CRS: {crs}")
 
     # Diretório com máscaras preditas
-    masks_dir = Config.MASKS_DIR / str(year) / feature
+    masks_dir = Config.MASKS_DIR / str(year) / f"{feature}{masks_subdir_suffix}"
     if not masks_dir.exists():
         print(f"  [ERRO] Diretório de máscaras não encontrado: {masks_dir}")
         return
@@ -130,7 +131,7 @@ def reconstruct_mosaic(feature: str, year: int):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Salvar GeoTIFF
-    output_path = output_dir / f"{feature}_mask_{year}.tif"
+    output_path = output_dir / f"{feature}_mask_{year}{output_suffix}.tif"
 
     profile = {
         "driver": "GTiff",
@@ -205,7 +206,23 @@ def main():
         choices=Config.YEARS,
         help="Ano específico. Se omitido, reconstrói todos."
     )
+    parser.add_argument(
+        "--tiles-dir", type=Path, default=None,
+        help="Diretório alternativo de tiles (default: Config.TILES_DIR)."
+    )
+    parser.add_argument(
+        "--masks-subdir-suffix", type=str, default="",
+        help="Sufixo da subpasta de máscaras (ex.: '_8cm' -> masks/{ano}/crevasses_8cm/)."
+    )
+    parser.add_argument(
+        "--output-suffix", type=str, default="",
+        help="Sufixo no nome do GeoTIFF de saída (ex.: '_8cm' -> crevasses_mask_2016_8cm.tif)."
+    )
     args = parser.parse_args()
+
+    if args.tiles_dir is not None:
+        Config.TILES_DIR = args.tiles_dir.resolve()
+        print(f"📁 Tiles vindos de: {Config.TILES_DIR}")
 
     print("=" * 60)
     print("FASE 5 - RECONSTRUÇÃO DE MOSAICOS GEOTIFF")
@@ -219,7 +236,11 @@ def main():
     results = {}
     for feature in features:
         for year in years:
-            meta = reconstruct_mosaic(feature, year)
+            meta = reconstruct_mosaic(
+                feature, year,
+                masks_subdir_suffix=args.masks_subdir_suffix,
+                output_suffix=args.output_suffix,
+            )
             if meta:
                 results[f"{feature}_{year}"] = meta
 

@@ -58,6 +58,45 @@ def get_mosaic_info(mosaic_path: Path) -> dict:
     return info
 
 
+def get_mosaic_path_for_year(year: int, source_dir: Path | None = None) -> Path:
+    """
+    Resolve caminho do mosaico para um ano, com opção de sobrescrever diretório.
+
+    Args:
+        year: Ano do mosaico
+        source_dir: Diretório opcional com mosaicos tratados
+
+    Returns:
+        Caminho para o mosaico
+    """
+    if source_dir is None:
+        return Config.get_mosaic_path(year)
+
+    if year not in Config.MOSAICS:
+        raise ValueError(f"Ano {year} não disponível. Anos válidos: {Config.YEARS}")
+
+    preferred = source_dir / Config.MOSAICS[year]
+    if preferred.exists():
+        return preferred
+
+    patterns = [
+        f"*{year}*.tif",
+        f"*{year}*.TIF",
+        f"*{year}*.tiff",
+        f"*{year}*.TIFF",
+    ]
+
+    candidates = []
+    for pattern in patterns:
+        candidates.extend([p for p in source_dir.glob(pattern) if p.is_file()])
+
+    filtered = [p for p in candidates if "mosaic" in p.name.lower()]
+    if filtered:
+        return sorted(filtered, key=lambda p: p.name)[0]
+
+    return preferred
+
+
 def create_tiles(mosaic_path: Path, output_dir: Path, 
                  tile_size: int = 512, overlap: int = 64,
                  min_valid_ratio: float = 0.7) -> list:
@@ -189,7 +228,7 @@ def create_tiles(mosaic_path: Path, output_dir: Path,
         return tiles_info
 
 
-def process_year(year: int) -> int:
+def process_year(year: int, source_dir: Path | None = None) -> int:
     """
     Processa mosaico de um ano específico.
     
@@ -199,7 +238,7 @@ def process_year(year: int) -> int:
     Returns:
         Número de tiles criados
     """
-    mosaic_path = Config.get_mosaic_path(year)
+    mosaic_path = get_mosaic_path_for_year(year, source_dir=source_dir)
     
     if not mosaic_path.exists():
         print(f"⚠️  Mosaico {year} não encontrado: {mosaic_path}")
@@ -218,7 +257,7 @@ def process_year(year: int) -> int:
     return len(tiles)
 
 
-def process_all_years() -> dict:
+def process_all_years(source_dir: Path | None = None) -> dict:
     """
     Processa todos os anos disponíveis.
     
@@ -235,7 +274,7 @@ def process_all_years() -> dict:
         print(f"ANO {year}")
         print(f"{'='*60}")
         
-        n_tiles = process_year(year)
+        n_tiles = process_year(year, source_dir=source_dir)
         results[year] = n_tiles
         total_tiles += n_tiles
     
@@ -249,14 +288,14 @@ def process_all_years() -> dict:
     return results
 
 
-def show_mosaics_info():
+def show_mosaics_info(source_dir: Path | None = None):
     """Mostra informações sobre todos os mosaicos disponíveis."""
     print("\n" + "="*60)
     print("INFORMAÇÕES DOS MOSAICOS")
     print("="*60)
     
     for year in Config.YEARS:
-        mosaic_path = Config.get_mosaic_path(year)
+        mosaic_path = get_mosaic_path_for_year(year, source_dir=source_dir)
         
         if not mosaic_path.exists():
             print(f"\n{year}: ⚠️  Não encontrado")
@@ -300,26 +339,48 @@ def main():
         default=Config.OVERLAP,
         help=f"Overlap entre tiles (default: {Config.OVERLAP})"
     )
-    
+    parser.add_argument(
+        "--source-dir",
+        type=Path,
+        default=None,
+        help="Diretório alternativo com mosaicos (ex.: mosaicos pré-processados)"
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Diretório de saída alternativo para os tiles (default: Config.TILES_DIR)"
+    )
+
     args = parser.parse_args()
-    
+
     # Atualizar config se parâmetros fornecidos
     if args.tile_size != Config.TILE_SIZE:
         Config.TILE_SIZE = args.tile_size
     if args.overlap != Config.OVERLAP:
         Config.OVERLAP = args.overlap
+    if args.output_dir is not None:
+        Config.TILES_DIR = args.output_dir.resolve()
+        print(f"📁 Tiles serão salvos em: {Config.TILES_DIR}")
     
+    source_dir = None
+    if args.source_dir is not None:
+        source_dir = args.source_dir.resolve()
+        if not source_dir.exists():
+            raise FileNotFoundError(f"Diretório não encontrado: {source_dir}")
+        print(f"📁 Usando mosaicos de: {source_dir}")
+
     if args.info:
-        show_mosaics_info()
+        show_mosaics_info(source_dir=source_dir)
         return
     
     Config.print_info()
     
     if args.year:
         Config.create_directories()
-        process_year(args.year)
+        process_year(args.year, source_dir=source_dir)
     else:
-        process_all_years()
+        process_all_years(source_dir=source_dir)
     
     print("\n✅ Processamento concluído!")
 

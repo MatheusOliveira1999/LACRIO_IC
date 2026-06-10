@@ -30,8 +30,8 @@ from tqdm import tqdm
 from config import Config
 
 import importlib
-_unet = importlib.import_module("03b_train_unet")
-_inf = importlib.import_module("04b_inference_unet")
+_unet = importlib.import_module("03_train_unet")
+_inf = importlib.import_module("04_inference_unet")
 UNetResNet34 = _unet.UNetResNet34
 load_unet = _inf.load_unet
 preprocess_image = _inf.preprocess_image
@@ -127,7 +127,16 @@ def rank_tiles_by_uncertainty(feature, year, top_n=None, detect_threshold=0.5,
             annotated.add(f_path.stem.replace(f"_{feature}", ""))
     print(f"  Total tiles: {len(tiles)} | Ja anotados: {len(annotated)} (excluidos)")
 
-    model, img_size = load_unet(feature)
+    model, img_size, in_channels, dem_features, dem_window = load_unet(feature)
+
+    # DEM provider se modelo for 6-canal
+    dem_provider = None
+    if in_channels > 3 and dem_features:
+        from shadow_utils import build_dem_provider
+        dem_provider, _ = build_dem_provider(
+            [year], feature_names=tuple(dem_features),
+            window_meters=dem_window or 3.0,
+        )
 
     ranked = []
     skipped = 0
@@ -154,7 +163,8 @@ def rank_tiles_by_uncertainty(feature, year, top_n=None, detect_threshold=0.5,
             skipped += 1
             continue
 
-        tensor = preprocess_image(image, img_size).to(Config.DEVICE)
+        dem_feats = dem_provider(tile_file) if dem_provider is not None else None
+        tensor = preprocess_image(image, img_size, dem_feats).to(Config.DEVICE)
 
         with torch.no_grad():
             logits = model(tensor)
@@ -388,7 +398,7 @@ def main():
         print(f"           --csv {csv_path}")
         print(f"     Desenhe a mascara (ou pressione R para GT=0 se nao houver feicao)")
         print(f"  3. Repita ate ter ~15-20 novos tiles anotados")
-        print(f"  4. Re-treine: python 03b_train_unet.py --feature {args.feature}")
+        print(f"  4. Re-treine: python 03_train_unet.py --feature {args.feature}")
     else:
         print("\n  Nenhum tile encontrado para sugerir.")
 

@@ -25,6 +25,7 @@ mosaicos_DEMs_Schiaparelli/*.tiff
 
 # Tiles gerados (podem ser regenerados)
 tiles/
+tiles_8cm/
 
 # Máscaras geradas
 masks/
@@ -34,6 +35,13 @@ results/
 
 # Dados intermediários
 data/
+
+# Dados brutos do glaciar (mosaicos VANT + DEMs, ~30 GB) - nunca versionar
+Schiaparelli_glacier/
+
+# Backups locais (snapshots de checkpoint + dados)
+backups/
+nohup.out
 
 # ============================================================
 # MODELOS DE MACHINE LEARNING
@@ -128,3 +136,14 @@ logs/
 # Arquivos de teste
 test_*.png
 debug_*.png
+
+# ============================================================
+# DOCUMENTOS (.md e artigos PDF)
+# ============================================================
+
+# Todos os .md ignorados exceto o README do projeto
+*.md
+!README.md
+
+# Artigos cientificos e outros PDFs (manter local, nao versionar)
+*.pdf

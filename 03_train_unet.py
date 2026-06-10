@@ -1,8 +1,8 @@
 """
-03b_train_unet.py - Treino de U-Net para segmentacao semantica de feicoes supraglaciais
+03_train_unet.py - Treino de U-Net para segmentacao semantica de feicoes supraglaciais
 
 Projeto: LACRIO IC - Extracao de Feicoes Supraglaciais
-Alternativa ao SAM: modelo semantico que nao precisa de prompt.
+Modelo de producao do pipeline (SAM descontinuado em abr/2026).
 
 Arquitetura:
   - Encoder: ResNet34 pre-treinado (ImageNet)
@@ -10,21 +10,14 @@ Arquitetura:
   - Saida: mascara binaria pixel-a-pixel (512x512)
   - Params treinaveis: ~24M (encoder ~21M + decoder ~3M)
 
-Vantagens sobre SAM:
-  - Nao precisa de prompt (ponto/bbox) na inferencia
-  - Forward pass unico (vs 64 por tile no SAM)
-  - Treino e inferencia identicos (sem gap)
-  - ~60x mais rapido na inferencia
-
 VRAM: ~2 GB com batch_size=4 (512x512)
 
 Uso:
-    python 03b_train_unet.py                           # Treina lakes
-    python 03b_train_unet.py --feature lakes           # Feicao especifica
-    python 03b_train_unet.py --epochs 100 --lr 1e-4    # Customizar
-    python 03b_train_unet.py --no-augment               # Sem augmentation
-    python 03b_train_unet.py --neg-ratio 2.0            # Mais negativos
-    python 03b_train_unet.py --pretrained-from sam      # Inicializa encoder do SAM ViT
+    python 03_train_unet.py                           # Treina lakes
+    python 03_train_unet.py --feature lakes           # Feicao especifica
+    python 03_train_unet.py --epochs 100 --lr 1e-4    # Customizar
+    python 03_train_unet.py --no-augment               # Sem augmentation
+    python 03_train_unet.py --neg-ratio 2.0            # Mais negativos
 """
 
 import argparse
@@ -41,13 +34,151 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
+import cv2
+
 from config import Config
 
-# Reutilizar collect_pairs e split_dataset do treino SAM
-import importlib
-_sam_train = importlib.import_module("03_finetune_sam")
-collect_pairs = _sam_train.collect_pairs
-split_dataset = _sam_train.split_dataset
+
+def _collect_shadow_negatives(years, n_samples, annotated_ids):
+    """Seleciona tiles com maior cobertura de sombra como hard negatives."""
+    from shadow_utils import get_shadow_coverage_for_tiles
+
+    shadow_tiles = []
+    for year in years:
+        coverage = get_shadow_coverage_for_tiles(year)
+        for tile_id, cov in coverage.items():
+            if (year, tile_id) in annotated_ids or cov < 0.05:
+                continue
+            tile_file = Config.TILES_DIR / str(year) / f"{tile_id}.png"
+            if tile_file.exists():
+                shadow_tiles.append((tile_file, cov))
+
+    shadow_tiles.sort(key=lambda x: x[1], reverse=True)
+    selected = [t[0] for t in shadow_tiles[:n_samples]]
+    if selected:
+        print(f"  Hard negatives de sombra: {len(selected)} tiles "
+              f"(cobertura {shadow_tiles[0][1]:.0%} - "
+              f"{shadow_tiles[min(len(selected)-1, len(shadow_tiles)-1)][1]:.0%})")
+    return selected
+
+
+def collect_pairs(feature: str, years=None, neg_ratio=1.0, shadow_neg_ratio=0.5):
+    """Coleta pares tile-mascara para uma feicao, incluindo amostras negativas.
+
+    Amostras negativas:
+    - Hard negatives de sombra (tiles com alta cobertura, so para lakes)
+    - Negativos explicitos (mascaras GT=0 anotadas manualmente)
+    - Negativos aleatorios (tiles sem anotacao)
+    """
+    if years is None:
+        years = Config.YEARS
+
+    tile_paths = []
+    mask_paths = []
+    annotated_tile_ids = set()
+    explicit_negative_tiles = []
+
+    for year in years:
+        annotations_dir = Config.MASKS_DIR / str(year) / "annotations" / feature
+        if not annotations_dir.exists():
+            continue
+
+        for mask_file in sorted(annotations_dir.glob(f"tile_*_{feature}.png")):
+            tile_id = mask_file.stem.replace(f"_{feature}", "")
+            tile_file = Config.TILES_DIR / str(year) / f"{tile_id}.png"
+            if not tile_file.exists():
+                continue
+
+            annotated_tile_ids.add((year, tile_id))
+            mask = cv2.imread(str(mask_file), cv2.IMREAD_GRAYSCALE)
+            has_foreground = bool(mask is not None and (mask > 127).any())
+            if has_foreground:
+                tile_paths.append(tile_file)
+                mask_paths.append(mask_file)
+            else:
+                explicit_negative_tiles.append(tile_file)
+
+    n_positives = len(tile_paths)
+    n_explicit_neg = len(explicit_negative_tiles)
+    if n_positives == 0:
+        if n_explicit_neg > 0:
+            print("  [AVISO] Ha apenas mascaras vazias (GT=0) e nenhum positivo.")
+            print("  [AVISO] Treino cancelado: anote ao menos alguns tiles positivos.")
+        return tile_paths, mask_paths
+
+    n_negatives_target = int(n_positives * neg_ratio)
+
+    random.seed(42)
+    if n_explicit_neg > n_negatives_target:
+        explicit_selected = random.sample(explicit_negative_tiles, n_negatives_target)
+    else:
+        explicit_selected = explicit_negative_tiles
+
+    for tile_file in explicit_selected:
+        tile_paths.append(tile_file)
+        mask_paths.append(None)
+
+    n_additional_negatives = max(0, n_negatives_target - len(explicit_selected))
+
+    shadow_negatives = []
+    n_shadow_neg = 0
+    if feature == "lakes" and shadow_neg_ratio > 0 and n_additional_negatives > 0:
+        n_shadow_neg = int(n_additional_negatives * shadow_neg_ratio)
+        shadow_negatives = _collect_shadow_negatives(years, n_shadow_neg, annotated_tile_ids)
+        n_shadow_neg = len(shadow_negatives)
+
+    n_random_neg = max(0, n_additional_negatives - n_shadow_neg)
+    all_negative_candidates = []
+    shadow_paths_set = set(str(p) for p in shadow_negatives)
+
+    for year in years:
+        tiles_dir = Config.TILES_DIR / str(year)
+        if not tiles_dir.exists():
+            continue
+        for tile_file in tiles_dir.glob("tile_*.png"):
+            tile_id = tile_file.stem
+            if ((year, tile_id) not in annotated_tile_ids
+                    and str(tile_file) not in shadow_paths_set):
+                all_negative_candidates.append(tile_file)
+
+    random.seed(42)
+    if len(all_negative_candidates) > n_random_neg:
+        random_negatives = random.sample(all_negative_candidates, n_random_neg)
+    else:
+        random_negatives = all_negative_candidates
+
+    for tile_file in shadow_negatives:
+        tile_paths.append(tile_file)
+        mask_paths.append(None)
+    for tile_file in random_negatives:
+        tile_paths.append(tile_file)
+        mask_paths.append(None)
+
+    print(f"  Amostras positivas: {n_positives} | "
+          f"Negativas explicitas usadas: {len(explicit_selected)} "
+          f"(pool={n_explicit_neg}) | "
+          f"Negativas sombra: {n_shadow_neg} | "
+          f"Negativas aleatorias: {len(random_negatives)}")
+
+    return tile_paths, mask_paths
+
+
+def split_dataset(tile_paths, mask_paths, train_ratio=0.8, seed=42):
+    """Divide dataset em treino e validacao."""
+    indices = list(range(len(tile_paths)))
+    random.seed(seed)
+    random.shuffle(indices)
+
+    split_idx = int(len(indices) * train_ratio)
+    train_idx = indices[:split_idx]
+    val_idx = indices[split_idx:]
+
+    train_tiles = [tile_paths[i] for i in train_idx]
+    train_masks = [mask_paths[i] for i in train_idx]
+    val_tiles = [tile_paths[i] for i in val_idx]
+    val_masks = [mask_paths[i] for i in val_idx]
+
+    return train_tiles, train_masks, val_tiles, val_masks
 
 
 # ============================================================================
@@ -80,13 +211,30 @@ class UNetResNet34(nn.Module):
     Saida: 1 canal (sigmoid para probabilidade)
     """
 
-    def __init__(self, pretrained=True):
+    def __init__(self, pretrained=True, in_channels=3):
         super().__init__()
         import torchvision.models as models
+
+        self.in_channels = in_channels
 
         resnet = models.resnet34(
             weights=models.ResNet34_Weights.IMAGENET1K_V1 if pretrained else None
         )
+
+        # Se in_channels != 3, substitui conv1 preservando pesos ImageNet dos 3 RGB
+        if in_channels != 3:
+            new_conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2,
+                                  padding=3, bias=False)
+            if pretrained:
+                with torch.no_grad():
+                    # Copia pesos RGB nos primeiros 3 canais
+                    new_conv1.weight[:, :3] = resnet.conv1.weight
+                    # Canais extras inicializam com media dos pesos RGB
+                    # (preserva escala do encoder pre-treinado)
+                    rgb_mean = resnet.conv1.weight.mean(dim=1, keepdim=True)
+                    for c in range(3, in_channels):
+                        new_conv1.weight[:, c:c+1] = rgb_mean
+            resnet.conv1 = new_conv1
 
         # Encoder: extrair blocos do ResNet34
         self.enc0 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu)  # 64, /2
@@ -150,11 +298,32 @@ class UNetResNet34(nn.Module):
 # Dataset
 # ============================================================================
 
-def get_train_transform():
-    """Pipeline de augmentacao para treino."""
-    import albumentations as A
+def _gradient_brightness(image, **kwargs):
+    """Brilho aditivo nao-uniforme: gradiente direcional dentro do tile.
 
-    return A.Compose([
+    Simula iluminacao desigual de levantamentos VANT realizados em periodos
+    diferentes do dia, onde partes do mosaico ficam mais claras que outras.
+    """
+    if image.ndim != 3:
+        return image
+    h, w = image.shape[:2]
+    angle = np.random.uniform(0, 2 * np.pi)
+    intensity = np.random.uniform(-35, 35)
+
+    y_coords, x_coords = np.meshgrid(
+        np.linspace(-1, 1, h),
+        np.linspace(-1, 1, w),
+        indexing="ij",
+    )
+    gradient = (x_coords * np.cos(angle) + y_coords * np.sin(angle)) * intensity
+    img_float = image.astype(np.float32) + gradient[..., None]
+    return np.clip(img_float, 0, 255).astype(np.uint8)
+
+
+def _build_geom_transforms():
+    """Lista de transforms geometricos (aplicam em RGB e DEM igualmente)."""
+    import albumentations as A
+    return [
         A.RandomRotate90(p=1.0),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
@@ -162,12 +331,48 @@ def get_train_transform():
             shift_limit=0.1, scale_limit=0.2, rotate_limit=15,
             border_mode=cv2.BORDER_REFLECT_101, p=0.5
         ),
-        A.ElasticTransform(alpha=120, sigma=120 * 0.05, p=0.3),
-        A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+    ]
+
+
+def _build_chrom_transforms():
+    """Lista de transforms cromaticos (so RGB - nunca aplicar em DEM)."""
+    import albumentations as A
+    return [
+        A.RandomBrightnessContrast(brightness_limit=0.25, contrast_limit=0.25, p=0.5),
         A.RandomGamma(gamma_limit=(70, 150), p=0.3),
-        A.GaussNoise(var_limit=(10, 50), p=0.3),
+        A.Lambda(image=_gradient_brightness, p=0.4),
+        A.HueSaturationValue(hue_shift_limit=8, sat_shift_limit=10, val_shift_limit=8, p=0.3),
+        A.RGBShift(r_shift_limit=10, g_shift_limit=10, b_shift_limit=10, p=0.3),
+        A.GaussNoise(std_range=(0.04, 0.18), p=0.3),
         A.CLAHE(clip_limit=4.0, p=0.3),
-    ])
+    ]
+
+
+def get_train_transform():
+    """Pipeline unica de augmentacao (modo RGB-only).
+
+    Foco em robustez a variacao de iluminacao (drone voou em horarios diferentes
+    -> mosaicos com brilho heterogeneo dentro e entre tiles).
+    """
+    import albumentations as A
+    return A.Compose(_build_geom_transforms() + _build_chrom_transforms())
+
+
+def get_train_transforms_split(n_dem_channels):
+    """Pipelines separadas para modo RGB+DEM.
+
+    Geometria aplica em RGB e em cada canal DEM (additional_targets).
+    Cromatica aplica APENAS no RGB.
+
+    Returns:
+        geom_transform: Compose com additional_targets para canais DEM.
+        chrom_transform: Compose so RGB.
+    """
+    import albumentations as A
+    additional = {f"dem{i}": "image" for i in range(n_dem_channels)}
+    geom = A.Compose(_build_geom_transforms(), additional_targets=additional)
+    chrom = A.Compose(_build_chrom_transforms())
+    return geom, chrom
 
 
 def get_copy_paste_source(tile_paths, mask_paths):
@@ -176,10 +381,19 @@ def get_copy_paste_source(tile_paths, mask_paths):
 
 
 class GlacierDataset(Dataset):
-    """Dataset para U-Net. Retorna imagem RGB + mascara binaria."""
+    """Dataset para U-Net. Retorna imagem RGB (+ DEM features opcional) + mascara."""
 
     def __init__(self, tile_paths, mask_paths, transform=None,
-                 img_size=512, copy_paste=False, copy_paste_prob=0.5):
+                 img_size=512, copy_paste=False, copy_paste_prob=0.5,
+                 dem_provider=None, dem_chrom_transform=None):
+        """
+        Args:
+            transform: Compose unico (modo RGB-only). Aplica geom+chrom no RGB.
+            dem_provider: Callable(tile_path) -> (H, W, n_dem) ja normalizado, ou None.
+                          Quando fornecido, ativa modo RGB+DEM.
+            dem_chrom_transform: Compose so cromatico (so RGB). Usado em modo RGB+DEM:
+                                  `transform` deve ser apenas geometrico nesse caso.
+        """
         self.tile_paths = tile_paths
         self.mask_paths = mask_paths
         self.transform = transform
@@ -187,6 +401,8 @@ class GlacierDataset(Dataset):
         self.copy_paste = copy_paste
         self.copy_paste_prob = copy_paste_prob
         self.positive_indices = get_copy_paste_source(tile_paths, mask_paths)
+        self.dem_provider = dem_provider
+        self.dem_chrom_transform = dem_chrom_transform
 
     def __len__(self):
         return len(self.tile_paths)
@@ -245,24 +461,63 @@ class GlacierDataset(Dataset):
         if self.copy_paste:
             image, mask = self._apply_copy_paste(image, mask)
 
-        if self.transform:
-            augmented = self.transform(image=image, mask=mask)
-            image = augmented["image"]
-            mask = augmented["mask"]
+        # Carregar DEM features (modo RGB+DEM)
+        dem_feats = None
+        if self.dem_provider is not None:
+            dem_feats = self.dem_provider(self.tile_paths[idx])
+            if dem_feats is not None and dem_feats.shape[:2] != image.shape[:2]:
+                dem_feats = cv2.resize(
+                    dem_feats, (image.shape[1], image.shape[0]),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+                if dem_feats.ndim == 2:
+                    dem_feats = dem_feats[..., None]
+
+        # Augmentation
+        if self.transform is not None:
+            if dem_feats is not None:
+                # Modo RGB+DEM: transform e SO GEOMETRICO, aplicado a RGB + cada canal DEM
+                kwargs = {f"dem{i}": dem_feats[..., i] for i in range(dem_feats.shape[2])}
+                augmented = self.transform(image=image, mask=mask, **kwargs)
+                image = augmented["image"]
+                mask = augmented["mask"]
+                dem_feats = np.stack(
+                    [augmented[f"dem{i}"] for i in range(dem_feats.shape[2])],
+                    axis=-1,
+                )
+                # Cromatica so no RGB
+                if self.dem_chrom_transform is not None:
+                    image = self.dem_chrom_transform(image=image)["image"]
+            else:
+                # Modo RGB-only: pipeline unica geometria+cromatica
+                augmented = self.transform(image=image, mask=mask)
+                image = augmented["image"]
+                mask = augmented["mask"]
 
         # Resize para tamanho fixo
         image = cv2.resize(image, (self.img_size, self.img_size),
                            interpolation=cv2.INTER_LINEAR)
         mask = cv2.resize(mask, (self.img_size, self.img_size),
                           interpolation=cv2.INTER_NEAREST)
+        if dem_feats is not None:
+            dem_feats = cv2.resize(dem_feats, (self.img_size, self.img_size),
+                                   interpolation=cv2.INTER_LINEAR)
+            if dem_feats.ndim == 2:
+                dem_feats = dem_feats[..., None]
 
-        # Normalizar ImageNet
+        # Normalizar ImageNet (RGB)
         image = image.astype(np.float32) / 255.0
         mean = np.array([0.485, 0.456, 0.406])
         std = np.array([0.229, 0.224, 0.225])
         image = (image - mean) / std
 
-        image_tensor = torch.from_numpy(image).permute(2, 0, 1).float()
+        # Concatenar DEM (ja normalizado via z-score pelo provider)
+        if dem_feats is not None:
+            full = np.concatenate([image, dem_feats.astype(np.float32)], axis=-1)
+        else:
+            full = image
+
+        image_tensor = torch.from_numpy(full).permute(2, 0, 1).float()
         mask_tensor = torch.from_numpy(mask).unsqueeze(0).float()
 
         return image_tensor, mask_tensor
@@ -363,7 +618,10 @@ def train(feature: str, epochs: int = 100, lr: float = 1e-4,
           use_augment: bool = True, neg_ratio: float = 1.0,
           shadow_neg_ratio: float = 0.5, years=None,
           freeze_encoder: bool = False, patience: int = None,
-          loss: str = "bce_dice", fp_weight: float = 0.7, fn_weight: float = 0.3):
+          loss: str = "bce_dice", fp_weight: float = 0.7, fn_weight: float = 0.3,
+          use_dem_channels: bool = False,
+          dem_features=("relief", "slope", "curvature"),
+          dem_window_meters: float = 3.0):
     """Treina U-Net para uma feicao."""
 
     print(f"\n{'='*60}")
@@ -376,6 +634,7 @@ def train(feature: str, epochs: int = 100, lr: float = 1e-4,
     print(f"Neg ratio: {neg_ratio} | Shadow neg: {shadow_neg_ratio}")
     print(f"Loss: {loss}" + (f" (fp_weight={fp_weight}, fn_weight={fn_weight})" if loss == "bce_tversky" else ""))
     print(f"Anos usados no treino: {years if years else Config.YEARS}")
+    print(f"DEM channels: {'SIM (' + ','.join(dem_features) + ')' if use_dem_channels else 'NAO'}")
 
     # Coletar dados (reutiliza mesma funcao do SAM)
     print(f"\n[1/3] Coletando dados...")
@@ -400,15 +659,46 @@ def train(feature: str, epochs: int = 100, lr: float = 1e-4,
     print(f"  Val: {len(val_tiles)} ({n_val_pos} pos, "
           f"{len(val_tiles) - n_val_pos} neg)")
 
+    # Provider de DEM features (modo RGB+DEM)
+    dem_provider = None
+    dem_feature_names = None
+    in_channels = 3
+    if use_dem_channels:
+        from shadow_utils import build_dem_provider
+        years_for_dem = years if years else Config.YEARS
+        dem_provider, dem_feature_names = build_dem_provider(
+            years_for_dem, feature_names=tuple(dem_features),
+            window_meters=dem_window_meters,
+        )
+        if dem_provider is None:
+            print("  [DEM-CH] Nenhum DEM disponivel. Caindo para RGB-only.")
+            use_dem_channels = False
+        else:
+            in_channels = 3 + len(dem_feature_names)
+            print(f"  [DEM-CH] in_channels: {in_channels}")
+
     # Datasets
-    train_transform = get_train_transform() if use_augment else None
+    if use_augment:
+        if use_dem_channels:
+            geom_transform, chrom_transform = get_train_transforms_split(
+                n_dem_channels=len(dem_feature_names)
+            )
+        else:
+            geom_transform = get_train_transform()
+            chrom_transform = None
+    else:
+        geom_transform = None
+        chrom_transform = None
+
     train_dataset = GlacierDataset(
-        train_tiles, train_masks, transform=train_transform,
+        train_tiles, train_masks, transform=geom_transform,
         img_size=img_size, copy_paste=use_augment, copy_paste_prob=0.5,
+        dem_provider=dem_provider, dem_chrom_transform=chrom_transform,
     )
     val_dataset = GlacierDataset(
         val_tiles, val_masks, transform=None,
         img_size=img_size, copy_paste=False,
+        dem_provider=dem_provider, dem_chrom_transform=None,
     )
 
     train_loader = DataLoader(
@@ -421,8 +711,8 @@ def train(feature: str, epochs: int = 100, lr: float = 1e-4,
     )
 
     # Modelo
-    print(f"\n[2/3] Inicializando U-Net (ResNet34 encoder)...")
-    model = UNetResNet34(pretrained=True).to(Config.DEVICE)
+    print(f"\n[2/3] Inicializando U-Net (ResNet34 encoder, in_channels={in_channels})...")
+    model = UNetResNet34(pretrained=True, in_channels=in_channels).to(Config.DEVICE)
 
     if freeze_encoder:
         _encoder_prefixes = ("enc0.", "enc1.", "enc2.", "enc3.", "enc4.", "pool0.")
@@ -571,6 +861,9 @@ def train(feature: str, epochs: int = 100, lr: float = 1e-4,
                 "feature": feature,
                 "img_size": img_size,
                 "architecture": "unet_resnet34",
+                "in_channels": in_channels,
+                "dem_features": dem_feature_names if use_dem_channels else None,
+                "dem_window_meters": dem_window_meters if use_dem_channels else None,
             }, checkpoint_path)
             print(f"  >>> Melhor modelo salvo! (f1={val_f1:.4f})")
         else:
@@ -633,6 +926,15 @@ def main():
                              "Maior = mais conservador = maior precisao.")
     parser.add_argument("--fn-weight", type=float, default=0.3,
                         help="Peso dos falsos negativos no Tversky Loss (default: 0.3).")
+    parser.add_argument("--use-dem-channels", action="store_true",
+                        help="Adiciona DEM features (relief+slope+curvature) como canais "
+                             "extras no input da U-Net. in_channels passa de 3 para 6.")
+    parser.add_argument("--dem-features", type=str, nargs="+",
+                        default=["relief", "slope", "curvature"],
+                        choices=["relief", "slope", "curvature"],
+                        help="Quais features DEM usar como canais extras.")
+    parser.add_argument("--dem-window", type=float, default=3.0,
+                        help="Janela (m) para media local de relief. Default: 3.0m.")
     args = parser.parse_args()
 
     train(
@@ -650,6 +952,9 @@ def main():
         loss=args.loss,
         fp_weight=args.fp_weight,
         fn_weight=args.fn_weight,
+        use_dem_channels=args.use_dem_channels,
+        dem_features=tuple(args.dem_features),
+        dem_window_meters=args.dem_window,
     )
 
 

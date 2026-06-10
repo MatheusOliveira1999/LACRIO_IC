@@ -8,8 +8,9 @@ Uso:
     python annotate.py --review --year 2016     # revisar tiles JA anotados
 
 Controles:
-    Pincel esquerdo     → adicionar lago (pintar vermelho)
+    Pincel esquerdo     → adicionar feicao (pintar vermelho)
     Pincel direito      → apagar (borracha)
+    L                   → alternar modo linha/pixel para fendas
     A                   → aceitar predicao do modelo como anotacao
     R                   → rejeitar (salvar mascara vazia = sem lago)
     Z                   → desfazer ultima pincelada
@@ -35,10 +36,8 @@ import torch
 
 from config import Config
 import importlib
-_unet = importlib.import_module("03b_train_unet")
-_inf  = importlib.import_module("04b_inference_unet")
-UNetResNet34 = _unet.UNetResNet34
-load_unet    = _inf.load_unet
+_inf = importlib.import_module("04_inference_unet")
+load_unet = _inf.load_unet
 preprocess_image = _inf.preprocess_image
 
 
@@ -56,7 +55,38 @@ def load_tile_list(feature, year=None, csv_path=None, review=False):
     tiles = []
 
     if review:
-        # Modo revisao: coletar tiles que ja tem anotacao salva
+        # Modo revisao:
+        # - com CSV: revisa apenas os tiles listados no arquivo
+        # - sem CSV: revisa todos os tiles ja anotados no(s) ano(s)
+        if csv_path and Path(csv_path).exists():
+            with open(csv_path) as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if "tile_id" not in row:
+                        continue
+                    try:
+                        yr = int(row.get("year", year if year is not None else 0))
+                    except (TypeError, ValueError):
+                        continue
+                    if year and yr != year:
+                        continue
+
+                    tid = row["tile_id"]
+                    tile_path = Path(row.get("tile_path", ""))
+                    if not tile_path.exists():
+                        tile_path = Config.TILES_DIR / str(yr) / f"{tid}.png"
+
+                    gt_path = (Config.MASKS_DIR / str(yr) / "annotations" / feature
+                               / f"{tid}_{feature}.png")
+                    if gt_path.exists() and tile_path.exists():
+                        tiles.append({
+                            "tile_id": tid,
+                            "year": yr,
+                            "tile_path": str(tile_path),
+                            "score": float(row.get("score", row.get("uncertainty_score", 0))),
+                        })
+            return tiles
+
         years = [year] if year else Config.YEARS
         for yr in years:
             gt_dir = Config.MASKS_DIR / str(yr) / "annotations" / feature
@@ -120,12 +150,20 @@ def load_tile_list(feature, year=None, csv_path=None, review=False):
     return result
 
 
-def get_model_prediction(model, img_size, tile_path):
-    """Roda U-Net e retorna mapa de probabilidade."""
+def get_model_prediction(model, img_size, tile_path, dem_provider=None):
+    """Roda U-Net e retorna mapa de probabilidade.
+
+    Se modelo for 6-canal, `dem_provider` deve ser fornecido para extrair
+    DEM features (relief, slope, curvature) do tile.
+    """
     image = cv2.imread(str(tile_path))
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    if model is None:
+        pred_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        return image, pred_mask
     h, w = image.shape[:2]
-    tensor = preprocess_image(image, img_size).to(Config.DEVICE)
+    dem_feats = dem_provider(tile_path) if dem_provider is not None else None
+    tensor = preprocess_image(image, img_size, dem_feats).to(Config.DEVICE)
     with torch.no_grad():
         logits = model(tensor)
         prob = torch.sigmoid(logits[0, 0]).cpu().numpy()
@@ -142,18 +180,24 @@ class AnnotationApp:
     DISPLAY_SIZE = 512   # tamanho de exibicao de cada painel
     BRUSH_DEFAULT = 10
 
-    def __init__(self, root, tiles, feature, model, img_size, review=False):
+    def __init__(self, root, tiles, feature, model, img_size, review=False,
+                 dem_provider=None):
         self.root = root
         self.tiles = tiles
         self.feature = feature
         self.model = model
+        self.use_model = model is not None
         self.img_size = img_size
         self.review = review
+        self.dem_provider = dem_provider
 
         self.idx = 0
         self.brush_size = self.BRUSH_DEFAULT
         self.drawing = False
         self.erasing = False
+        self.line_mode = feature == "crevasses"
+        self.line_start_draw = None
+        self.line_start_erase = None
         self.undo_stack = []
 
         # Zoom / pan state (em coordenadas do display S×S)
@@ -190,6 +234,10 @@ class AnnotationApp:
         self.lbl_brush = tk.Label(top, text="", fg="#ffcc00", bg="#1e1e1e",
                                   font=("Courier", 10))
         self.lbl_brush.pack(side=tk.RIGHT, padx=12)
+
+        self.lbl_tool = tk.Label(top, text="", fg="#66ddff", bg="#1e1e1e",
+                                 font=("Courier", 10))
+        self.lbl_tool.pack(side=tk.RIGHT, padx=12)
 
         # Paineis de imagem
         panels = tk.Frame(self.root, bg="#111")
@@ -246,9 +294,16 @@ class AnnotationApp:
         btn_cfg = {"font": ("Courier", 11, "bold"), "width": 14, "height": 1,
                    "relief": tk.FLAT, "bd": 0, "padx": 6}
 
-        tk.Button(btn_frame, text="[A] Aceitar pred",
-                  bg="#2255aa", fg="white", command=self._accept_pred,
-                  **btn_cfg).pack(side=tk.LEFT, padx=6)
+        self.btn_accept = tk.Button(
+            btn_frame,
+            text="[A] Aceitar pred",
+            bg="#2255aa" if self.use_model else "#2f2f2f",
+            fg="white" if self.use_model else "#888888",
+            state=tk.NORMAL if self.use_model else tk.DISABLED,
+            command=self._accept_pred,
+            **btn_cfg
+        )
+        self.btn_accept.pack(side=tk.LEFT, padx=6)
 
         tk.Button(btn_frame, text="[R] Rejeitar",
                   bg="#884400", fg="white", command=self._reject,
@@ -272,9 +327,12 @@ class AnnotationApp:
                       **btn_cfg).pack(side=tk.LEFT, padx=6)
 
         # Instrucoes
+        pred_hint = "  |  A: aceitar pred" if self.use_model else ""
+        line_hint = "  |  L: linha/pixel" if self.feature == "crevasses" else ""
         info = tk.Label(self.root,
-                        text="Esq: pintar  |  Dir: apagar  |  Scroll: pincel  |  "
-                             "Ctrl+Scroll: zoom  |  BotaoMeio: pan  |  0: reset zoom",
+                        text="Esq: pintar/linha  |  Dir: apagar  |  Scroll: pincel  |  "
+                             "Ctrl+Scroll: zoom  |  BotaoMeio: pan  |  0: reset zoom"
+                             f"{line_hint}{pred_hint}",
                         fg="#888888", bg="#111", font=("Courier", 9))
         info.pack(pady=4)
 
@@ -297,6 +355,8 @@ class AnnotationApp:
         self.root.bind("0",         lambda e: self._reset_zoom())
         self.root.bind("d",         lambda e: self._delete_annotation())
         self.root.bind("D",         lambda e: self._delete_annotation())
+        self.root.bind("l",         lambda e: self._toggle_line_mode())
+        self.root.bind("L",         lambda e: self._toggle_line_mode())
 
     def _load_tile(self):
         if self.idx >= len(self.tiles):
@@ -307,7 +367,7 @@ class AnnotationApp:
 
         t = self.tiles[self.idx]
         self.image, self.pred_mask = get_model_prediction(
-            self.model, self.img_size, t["tile_path"]
+            self.model, self.img_size, t["tile_path"], dem_provider=self.dem_provider
         )
 
         # No modo revisao: carregar mascara existente como ponto de partida
@@ -322,6 +382,8 @@ class AnnotationApp:
         else:
             self.mask = np.zeros(self.image.shape[:2], dtype=np.uint8)
         self.undo_stack = []
+        self.line_start_draw = None
+        self.line_start_erase = None
         # Resetar zoom ao mudar de tile
         self.zoom_level = 1.0
         self.view_x = 0.0
@@ -331,6 +393,7 @@ class AnnotationApp:
         self.lbl_progress.config(text=f"Tile {self.idx+1}/{n}")
         self.lbl_tile.config(text=f"{t['tile_id']}  ano={t['year']}  "
                                    f"score={t.get('score',0):.0f}")
+        self._update_tool_label()
         self._update_brush_label()
         self._render()
 
@@ -387,12 +450,38 @@ class AnnotationApp:
         ).astype(np.uint8)
 
         self._draw_canvas(self.canvas_ann, self._get_zoomed_view(ann_resized))
+        self._draw_line_start_marker()
 
     def _draw_canvas(self, canvas, rgb_array):
         img = Image.fromarray(rgb_array)
         photo = ImageTk.PhotoImage(img)
         canvas.photo = photo  # manter referencia
+        canvas.delete("all")
         canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+
+    def _mask_to_canvas(self, mx, my):
+        """Converte coordenadas da mascara para coordenadas do canvas atual."""
+        S = self.DISPLAY_SIZE
+        h, w = self.mask.shape
+        sx = mx * S / w
+        sy = my * S / h
+        cx = (sx - self.view_x) * self.zoom_level
+        cy = (sy - self.view_y) * self.zoom_level
+        return cx, cy
+
+    def _draw_line_start_marker(self):
+        """Mostra o primeiro ponto enquanto espera o segundo clique da linha."""
+        start = self.line_start_draw or self.line_start_erase
+        if start is None:
+            return
+        cx, cy = self._mask_to_canvas(*start)
+        S = self.DISPLAY_SIZE
+        if not (0 <= cx <= S and 0 <= cy <= S):
+            return
+        color = "#ff4444" if self.line_start_draw else "#44aaff"
+        r = 5
+        self.canvas_ann.create_oval(cx-r, cy-r, cx+r, cy+r,
+                                    outline=color, width=2)
 
     # ---- Mouse ----
 
@@ -410,20 +499,51 @@ class AnnotationApp:
 
     def _paint(self, cx, cy, value):
         mx, my = self._canvas_to_mask(cx, cy)
-        S = self.DISPLAY_SIZE
+        br = self._brush_radius_mask()
         h, w = self.mask.shape
-        # Brush size em pixels da mascara, escalado pelo zoom
-        # (pincel sempre ocupa o mesmo numero de pixels no ecra)
-        br = max(1, int(self.brush_size * w / S / self.zoom_level))
         y1 = max(0, my - br); y2 = min(h, my + br)
         x1 = max(0, mx - br); x2 = min(w, mx + br)
         self.mask[y1:y2, x1:x2] = value
         self._render()
 
-    def _on_press_left(self, e):
+    def _brush_radius_mask(self):
+        S = self.DISPLAY_SIZE
+        h, w = self.mask.shape
+        # Brush size em pixels da mascara, escalado pelo zoom
+        # (pincel sempre ocupa o mesmo numero de pixels no ecra)
+        return max(1, int(self.brush_size * w / S / self.zoom_level))
+
+    def _push_undo(self):
         self.undo_stack.append(self.mask.copy())
         if len(self.undo_stack) > 30:
             self.undo_stack.pop(0)
+
+    def _draw_line(self, start, end, value):
+        br = self._brush_radius_mask()
+        thickness = max(1, br * 2)
+        cv2.line(self.mask, start, end, int(value),
+                 thickness=thickness, lineType=cv2.LINE_8)
+        self._render()
+
+    def _handle_line_click(self, e, value):
+        point = self._canvas_to_mask(e.x, e.y)
+        attr = "line_start_draw" if value else "line_start_erase"
+        other_attr = "line_start_erase" if value else "line_start_draw"
+        start = getattr(self, attr)
+        setattr(self, other_attr, None)
+        if start is None:
+            setattr(self, attr, point)
+            self._render()
+            return
+        setattr(self, attr, None)
+        self._push_undo()
+        self._draw_line(start, point, value)
+
+    def _on_press_left(self, e):
+        if self.line_mode:
+            self._handle_line_click(e, 255)
+            return
+        self._push_undo()
         self.drawing = True
         self._paint(e.x, e.y, 255)
 
@@ -432,9 +552,10 @@ class AnnotationApp:
             self._paint(e.x, e.y, 255)
 
     def _on_press_right(self, e):
-        self.undo_stack.append(self.mask.copy())
-        if len(self.undo_stack) > 30:
-            self.undo_stack.pop(0)
+        if self.line_mode:
+            self._handle_line_click(e, 0)
+            return
+        self._push_undo()
         self.erasing = True
         self._paint(e.x, e.y, 0)
 
@@ -511,17 +632,35 @@ class AnnotationApp:
         self._render()
 
     def _change_brush(self, delta):
-        self.brush_size = max(2, min(80, self.brush_size + delta))
+        self.brush_size = max(1, min(80, self.brush_size + delta))
         self._update_brush_label()
 
     def _update_brush_label(self):
         zoom_str = f"  zoom:{self.zoom_level:.1f}x" if self.zoom_level > 1.0 else ""
         self.lbl_brush.config(text=f"Pincel: {self.brush_size}px{zoom_str}")
 
+    def _toggle_line_mode(self):
+        if self.feature != "crevasses":
+            return
+        self.line_mode = not self.line_mode
+        self.line_start_draw = None
+        self.line_start_erase = None
+        self._update_tool_label()
+        self._render()
+
+    def _update_tool_label(self):
+        if self.feature == "crevasses":
+            tool = "LINHA" if self.line_mode else "PIXEL"
+            self.lbl_tool.config(text=f"Ferramenta: {tool}")
+        else:
+            self.lbl_tool.config(text="")
+
     # ---- Acoes ----
 
     def _accept_pred(self):
         """Copia predicao do modelo para a anotacao."""
+        if not self.use_model:
+            return
         self.undo_stack.append(self.mask.copy())
         self.mask = self.pred_mask.copy()
         self._render()
@@ -596,13 +735,14 @@ def main():
                         help="CSV do active learning (default: results/active_learning_FEATURE.csv)")
     parser.add_argument("--review", action="store_true",
                         help="Modo revisao: abre tiles JA anotados para corrigir/apagar")
+    parser.add_argument("--no-model", action="store_true",
+                        help="Abre anotador em modo manual, sem carregar U-Net.")
     args = parser.parse_args()
 
     print("Carregando lista de tiles...")
     if args.csv is None and not args.review:
         args.csv = str(Config.RESULTS_DIR / f"active_learning_{args.feature}.csv")
-    csv_arg = None if args.review else args.csv
-    tiles = load_tile_list(args.feature, args.year, csv_arg, review=args.review)
+    tiles = load_tile_list(args.feature, args.year, args.csv, review=args.review)
 
     if not tiles:
         msg = "Nenhum tile para revisar." if args.review else "Nenhum tile para anotar."
@@ -614,18 +754,33 @@ def main():
     if args.year:
         print(f"  Ano: {args.year}")
 
-    print("Carregando modelo U-Net...")
-    model, img_size = load_unet(args.feature)
-    model.eval()
+    model = None
+    img_size = 512
+    dem_provider = None
+    if not args.no_model:
+        print("Carregando modelo U-Net...")
+        try:
+            model, img_size, in_channels, dem_features, dem_window = load_unet(args.feature)
+            model.eval()
+            if in_channels > 3 and dem_features:
+                from shadow_utils import build_dem_provider
+                years_for_dem = [args.year] if args.year else Config.YEARS
+                dem_provider, _ = build_dem_provider(
+                    years_for_dem, feature_names=tuple(dem_features),
+                    window_meters=dem_window or 3.0,
+                )
+        except FileNotFoundError as e:
+            print(f"⚠️  {e}")
+            print("⚠️  Continuando em modo manual (sem predicao do modelo).")
 
     root = tk.Tk()
     root.configure(bg="#111")
     app = AnnotationApp(root, tiles, args.feature, model, img_size,
-                        review=args.review)
+                        review=args.review, dem_provider=dem_provider)
     root.mainloop()
 
     print(f"\nSessao encerrada. Tiles anotados nesta sessao: {app.idx}")
-    print(f"Para re-treinar: python 03b_train_unet.py --feature {args.feature}")
+    print(f"Para re-treinar: python 03_train_unet.py --feature {args.feature}")
 
 
 if __name__ == "__main__":

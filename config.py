@@ -14,14 +14,36 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
+
+def _detect_project_dir() -> Path:
+    """
+    Detecta automaticamente o diretório raiz do projeto.
+    """
+    return Path(__file__).resolve().parent
+
+
+def _detect_data_source_dir(project_dir: Path) -> Path:
+    """
+    Detecta automaticamente a pasta dos dados brutos.
+    """
+    candidates = [
+        project_dir / "Schiaparelli_glacier",
+        project_dir / "mosaicos_DEMs_Schiaparelli",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    # fallback para o caminho esperado atual
+    return project_dir / "Schiaparelli_glacier"
+
 class Config:
     """Configurações centralizadas do projeto."""
     
     # =========================================================================
     # DIRETÓRIOS
     # =========================================================================
-    PROJECT_DIR = Path("/home/matheus/Documents/GitHub/LACRIO IC")
-    DATA_SOURCE_DIR = PROJECT_DIR / "mosaicos_DEMs_Schiaparelli"  # Onde estão os mosaicos .tif
+    PROJECT_DIR = _detect_project_dir()
+    DATA_SOURCE_DIR = _detect_data_source_dir(PROJECT_DIR)  # Onde estão os mosaicos .tif
     DATA_DIR = PROJECT_DIR / "data"
     TILES_DIR = PROJECT_DIR / "tiles"
     MASKS_DIR = PROJECT_DIR / "masks"
@@ -215,14 +237,42 @@ class Config:
         """Retorna caminho para mosaico de um ano específico."""
         if year not in cls.MOSAICS:
             raise ValueError(f"Ano {year} não disponível. Anos válidos: {cls.YEARS}")
-        return cls.DATA_SOURCE_DIR / cls.MOSAICS[year]
+        preferred = cls.DATA_SOURCE_DIR / cls.MOSAICS[year]
+        if preferred.exists():
+            return preferred
+        return cls._resolve_data_file(year=year, kind="mosaic", fallback=preferred)
     
     @classmethod
     def get_dem_path(cls, year: int) -> Path:
         """Retorna caminho para DEM de um ano específico."""
         if year not in cls.DEMS:
             raise ValueError(f"DEM do ano {year} não disponível.")
-        return cls.DATA_SOURCE_DIR / cls.DEMS[year]
+        preferred = cls.DATA_SOURCE_DIR / cls.DEMS[year]
+        if preferred.exists():
+            return preferred
+        return cls._resolve_data_file(year=year, kind="dem", fallback=preferred)
+
+    @classmethod
+    def _resolve_data_file(cls, year: int, kind: str, fallback: Path) -> Path:
+        """
+        Resolve automaticamente nomes de arquivo com sufixos
+        (ex: Schiaparelli_mosaic_2018-006.tif).
+        """
+        patterns = [
+            f"*{year}*.tif",
+            f"*{year}*.TIF",
+            f"*{year}*.tiff",
+            f"*{year}*.TIFF",
+        ]
+        candidates = []
+        for pattern in patterns:
+            candidates.extend([p for p in cls.DATA_SOURCE_DIR.glob(pattern) if p.is_file()])
+
+        kind_l = kind.lower()
+        filtered = [p for p in candidates if kind_l in p.name.lower()]
+        if not filtered:
+            return fallback
+        return sorted(filtered, key=lambda p: p.name)[0]
     
     @classmethod
     def print_info(cls):
@@ -231,6 +281,7 @@ class Config:
         print("CONFIGURAÇÃO DO PROJETO - SAM GLACIAR SCHIAPARELLI")
         print("=" * 60)
         print(f"Diretório do projeto: {cls.PROJECT_DIR}")
+        print(f"Pasta de dados brutos: {cls.DATA_SOURCE_DIR}")
         print(f"Modelo SAM: {cls.MODEL_TYPE} ({'HQ' if cls.USE_SAM_HQ else 'standard'})")
         print(f"Checkpoint: {cls.SAM_CHECKPOINT.name}")
         print(f"Device: {cls.DEVICE}")

@@ -271,6 +271,378 @@ def filter_by_texture(mask, image, min_variance=None):
     return filtered
 
 
+# ============================================================================
+# Filtro por relief topografico (discrimina fenda vs detrito escuro)
+# ============================================================================
+
+def compute_relief_map(dem, window_pixels):
+    """Computa relief local: z - mean(z em janela).
+
+    Fendas sao depressoes verticais lineares: relief fortemente negativo.
+    Detritos escuros sao camadas superficiais: relief proximo de zero.
+
+    Args:
+        dem: Array 2D de elevacao (metros). NaN = NoData.
+        window_pixels: Tamanho impar da janela (em pixels do DEM) para a media local.
+
+    Returns:
+        relief: Array 2D float32 (metros). Negativo = depressao local.
+    """
+    nodata_mask = np.isnan(dem)
+    dem_clean = np.nan_to_num(dem, nan=0.0)
+
+    mean = cv2.blur(dem_clean, (window_pixels, window_pixels))
+    relief = dem_clean - mean
+    relief[nodata_mask] = 0.0
+    return relief.astype(np.float32)
+
+
+def precompute_year_relief(year, window_meters=2.5):
+    """Pre-computa relief map para um ano.
+
+    Args:
+        year: Ano do DEM.
+        window_meters: Tamanho da janela em metros para media local
+                       (~2-3m e razoavel: contexto suficiente sem diluir).
+
+    Returns:
+        relief_map: Array 2D float32 (metros) em resolucao do DEM.
+        dem_transform: Affine transform do DEM (rasterio).
+        None, None se DEM nao existir.
+    """
+    try:
+        dem_path = Config.get_dem_path(year)
+    except (ValueError, AttributeError):
+        print(f"  [DEM] DEM nao disponivel para {year}")
+        return None, None
+
+    if not dem_path.exists():
+        print(f"  [DEM] Arquivo DEM nao encontrado: {dem_path}")
+        return None, None
+
+    print(f"  [DEM] Carregando DEM {year}: {dem_path.name}")
+
+    with rasterio.open(dem_path) as src:
+        dem = src.read(1).astype(np.float32)
+        dem_transform = src.transform
+        res_x = abs(src.res[0])
+        if src.nodata is not None:
+            dem[dem == src.nodata] = np.nan
+
+    window_pixels = max(3, int(round(window_meters / res_x)))
+    if window_pixels % 2 == 0:
+        window_pixels += 1
+
+    print(f"  [DEM] Res: {res_x:.3f}m | janela: {window_pixels}px (~{window_pixels*res_x:.1f}m)")
+
+    relief = compute_relief_map(dem, window_pixels)
+
+    valid = relief[~np.isnan(relief) & (relief != 0)]
+    if len(valid) > 0:
+        print(f"  [DEM] Relief: min={valid.min():.2f}m  "
+              f"p5={np.percentile(valid, 5):.2f}m  "
+              f"median={np.median(valid):.2f}m  "
+              f"max={valid.max():.2f}m")
+
+    return relief, dem_transform
+
+
+def get_relief_for_tile(tile_info, relief_map, dem_transform, tile_size=512):
+    """Extrai relief de um tile especifico.
+
+    Mesma logica de get_shadow_mask_for_tile mas para float32 (relief em metros).
+    """
+    if relief_map is None:
+        return np.zeros((tile_size, tile_size), dtype=np.float32)
+
+    t = tile_info["transform"]
+    xmin = t[2]
+    xmax = t[2] + tile_size * t[0]
+    ymax = t[5]
+    ymin = t[5] + tile_size * t[4]
+
+    try:
+        window = from_bounds(xmin, ymin, xmax, ymax, dem_transform)
+    except Exception:
+        return np.zeros((tile_size, tile_size), dtype=np.float32)
+
+    row_start = max(0, int(window.row_off))
+    row_stop = min(relief_map.shape[0], int(window.row_off + window.height))
+    col_start = max(0, int(window.col_off))
+    col_stop = min(relief_map.shape[1], int(window.col_off + window.width))
+
+    if row_stop <= row_start or col_stop <= col_start:
+        return np.zeros((tile_size, tile_size), dtype=np.float32)
+
+    patch = relief_map[row_start:row_stop, col_start:col_stop]
+    tile_relief = cv2.resize(patch, (tile_size, tile_size),
+                             interpolation=cv2.INTER_LINEAR)
+    return tile_relief
+
+
+def filter_by_dem_relief(mask, tile_relief, min_depth=-0.3, min_frac_below=0.30):
+    """Remove componentes sem assinatura topografica de fenda.
+
+    Componente e mantido se:
+      - relief MEDIO dentro do componente <= min_depth (depressao consistente)
+      OU
+      - pelo menos `min_frac_below` da area tem relief <= min_depth (fenda parcialmente
+        capturada pela predicao, mas com nucleo afundado)
+
+    Args:
+        mask: Mascara binaria predita uint8 (H, W).
+        tile_relief: Relief map do tile float32 (m, H, W).
+        min_depth: Profundidade minima (m, negativo). Default -0.3m.
+                   Fendas tipicamente > 50cm de profundidade local.
+        min_frac_below: Fracao minima de pixels do componente abaixo do threshold.
+
+    Returns:
+        filtered: Mascara filtrada uint8.
+    """
+    if mask.max() == 0:
+        return mask
+
+    filtered = np.zeros_like(mask)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+
+    for label_id in range(1, num_labels):
+        component_mask = (labels == label_id)
+        relief_vals = tile_relief[component_mask]
+
+        if len(relief_vals) == 0:
+            continue
+
+        mean_relief = float(relief_vals.mean())
+        frac_below = float((relief_vals <= min_depth).mean())
+
+        if mean_relief <= min_depth or frac_below >= min_frac_below:
+            filtered[component_mask] = 255
+
+    return filtered
+
+
+# ============================================================================
+# DEM como canais de input para a rede (relief + slope + curvature)
+# ============================================================================
+
+def compute_slope_map(dem, res_x, res_y):
+    """Slope em graus a partir do DEM.
+
+    Args:
+        dem: Array 2D de elevacao (m), NaN = NoData.
+        res_x, res_y: Resolucoes em metros (res_y positivo).
+
+    Returns:
+        slope: Array 2D float32 (graus). 0 = plano, 90 = vertical.
+    """
+    nodata_mask = np.isnan(dem)
+    dem_clean = np.nan_to_num(dem, nan=0.0)
+    dy, dx = np.gradient(dem_clean, res_y, res_x)
+    slope_rad = np.arctan(np.sqrt(dx**2 + dy**2))
+    slope_deg = np.degrees(slope_rad).astype(np.float32)
+    slope_deg[nodata_mask] = 0.0
+    return slope_deg
+
+
+def compute_curvature_map(dem, res_x, res_y, smooth_sigma=1.0):
+    """Curvatura (Laplaciano) do DEM.
+
+    Fendas tem curvatura negativa concentrada (depressao).
+    Cristas tem curvatura positiva. Plano tem ~0.
+
+    Args:
+        dem: Array 2D de elevacao (m).
+        res_x, res_y: Resolucoes em metros.
+        smooth_sigma: Sigma do filtro Gaussiano de pre-suavizacao
+                      (reduz ruido de alta frequencia do DEM).
+
+    Returns:
+        curvature: Array 2D float32 (m^-1).
+    """
+    nodata_mask = np.isnan(dem)
+    dem_clean = np.nan_to_num(dem, nan=0.0).astype(np.float32)
+
+    if smooth_sigma > 0:
+        ksize = max(3, int(round(smooth_sigma * 6)) | 1)  # impar
+        dem_clean = cv2.GaussianBlur(dem_clean, (ksize, ksize), smooth_sigma)
+
+    # Laplaciano (2a derivada) em coordenadas metricas
+    dy = np.gradient(dem_clean, res_y, axis=0)
+    dyy = np.gradient(dy, res_y, axis=0)
+    dx = np.gradient(dem_clean, res_x, axis=1)
+    dxx = np.gradient(dx, res_x, axis=1)
+    curvature = (dxx + dyy).astype(np.float32)
+    curvature[nodata_mask] = 0.0
+    return curvature
+
+
+def precompute_year_dem_features(year, window_meters=3.0,
+                                  features=("relief", "slope", "curvature")):
+    """Pre-computa stack de features DEM para um ano.
+
+    Returns:
+        features_stack: Array 3D float32 (H, W, n_features) ou None.
+        dem_transform: Affine transform do DEM.
+        feature_names: Lista de nomes das features na ordem dos canais.
+        stats: Dict {feature: (mean, std)} para normalizacao posterior.
+    """
+    try:
+        dem_path = Config.get_dem_path(year)
+    except (ValueError, AttributeError):
+        print(f"  [DEM-CH] DEM nao disponivel para {year}")
+        return None, None, None, None
+
+    if not dem_path.exists():
+        print(f"  [DEM-CH] Arquivo DEM nao encontrado: {dem_path}")
+        return None, None, None, None
+
+    print(f"  [DEM-CH] Carregando DEM {year}: {dem_path.name}")
+
+    with rasterio.open(dem_path) as src:
+        dem = src.read(1).astype(np.float32)
+        dem_transform = src.transform
+        res_x = abs(src.res[0])
+        res_y = abs(src.res[1])
+        if src.nodata is not None:
+            dem[dem == src.nodata] = np.nan
+
+    window_pixels = max(3, int(round(window_meters / res_x)))
+    if window_pixels % 2 == 0:
+        window_pixels += 1
+
+    print(f"  [DEM-CH] Res: {res_x:.3f}m | janela relief: {window_pixels}px"
+          f" (~{window_pixels*res_x:.1f}m) | features: {features}")
+
+    maps = {}
+    if "relief" in features:
+        maps["relief"] = compute_relief_map(dem, window_pixels)
+    if "slope" in features:
+        maps["slope"] = compute_slope_map(dem, res_x, res_y)
+    if "curvature" in features:
+        maps["curvature"] = compute_curvature_map(dem, res_x, res_y)
+
+    # Stats (mean/std) por feature, para z-score
+    # Mascarar valores extremos de bordas do glaciar (NoData propagado)
+    stats = {}
+    for name, arr in maps.items():
+        # Robusto: usar percentis 1-99 para evitar bordas extremas
+        valid = arr[(arr != 0) | (np.abs(arr) < 1e-6)]  # inclui zeros (legitimos)
+        if len(valid) == 0:
+            valid = arr.flatten()
+        p1, p99 = np.percentile(valid, [1, 99])
+        clipped = np.clip(arr, p1, p99)
+        m = float(clipped.mean())
+        s = float(clipped.std()) + 1e-6
+        stats[name] = (m, s)
+        print(f"  [DEM-CH] {name}: mean={m:.4f} std={s:.4f} (clip {p1:.3f}..{p99:.3f})")
+
+    # Empilhar como (H, W, N)
+    stack = np.stack([maps[f] for f in features if f in maps], axis=-1).astype(np.float32)
+
+    return stack, dem_transform, list(features), stats
+
+
+def get_dem_features_for_tile(tile_info, features_stack, dem_transform,
+                              tile_size=512):
+    """Extrai patch (tile_size, tile_size, n_features) de DEM features para um tile."""
+    if features_stack is None:
+        return None
+
+    n_feat = features_stack.shape[2]
+    t = tile_info["transform"]
+    xmin = t[2]
+    xmax = t[2] + tile_size * t[0]
+    ymax = t[5]
+    ymin = t[5] + tile_size * t[4]
+
+    try:
+        window = from_bounds(xmin, ymin, xmax, ymax, dem_transform)
+    except Exception:
+        return np.zeros((tile_size, tile_size, n_feat), dtype=np.float32)
+
+    row_start = max(0, int(window.row_off))
+    row_stop = min(features_stack.shape[0], int(window.row_off + window.height))
+    col_start = max(0, int(window.col_off))
+    col_stop = min(features_stack.shape[1], int(window.col_off + window.width))
+
+    if row_stop <= row_start or col_stop <= col_start:
+        return np.zeros((tile_size, tile_size, n_feat), dtype=np.float32)
+
+    patch = features_stack[row_start:row_stop, col_start:col_stop, :]
+    resized = cv2.resize(patch, (tile_size, tile_size), interpolation=cv2.INTER_LINEAR)
+    if resized.ndim == 2:
+        resized = resized[..., None]
+    return resized.astype(np.float32)
+
+
+def normalize_dem_features(tile_features, stats, feature_names, clip_sigma=6.0):
+    """Z-score por canal usando stats pre-computados, com clip de seguranca.
+
+    O clip impede que bordas mal tratadas (descontinuidades NoData->0 em
+    curvature/slope) injetem valores absurdos no input da rede.
+
+    Args:
+        tile_features: Array (H, W, n_feat) float32.
+        stats: Dict {feature_name: (mean, std)}.
+        feature_names: Lista de nomes (mesma ordem dos canais).
+        clip_sigma: Clip simetrico em multiplos de sigma. None = sem clip.
+    """
+    out = tile_features.copy()
+    for i, name in enumerate(feature_names):
+        if name in stats:
+            m, s = stats[name]
+            out[..., i] = (out[..., i] - m) / s
+            if clip_sigma is not None:
+                out[..., i] = np.clip(out[..., i], -clip_sigma, clip_sigma)
+    return out
+
+
+def build_dem_provider(years_list, feature_names=("relief", "slope", "curvature"),
+                       window_meters=3.0):
+    """Pre-computa DEM features por ano e devolve callable que mapeia tile_path -> features.
+
+    Returns:
+        provider: Callable(tile_path: Path|str) -> ndarray (H, W, n_feat) ja
+                  normalizado via z-score (clipado a +-6 sigma), ou None.
+        feature_names: Lista efetiva de nomes (a entrada filtrada).
+    """
+    import json
+
+    year_data = {}
+    tile_index_by_path = {}
+
+    for year in years_list:
+        stack, transform, names, stats = precompute_year_dem_features(
+            year, window_meters=window_meters, features=feature_names,
+        )
+        if stack is None:
+            print(f"  [DEM-CH] AVISO: pulando ano {year} (DEM nao disponivel)")
+            continue
+        year_data[year] = (stack, transform, names, stats)
+
+        tiles_index_path = Config.TILES_DIR / str(year) / "tiles_index.json"
+        if tiles_index_path.exists():
+            with open(tiles_index_path) as fh:
+                idx = json.load(fh)
+            year_dir = Config.TILES_DIR / str(year)
+            for t in idx["tiles"]:
+                tile_index_by_path[str(year_dir / t["filename"])] = (year, t)
+
+    if not year_data:
+        return None, None
+
+    def provider(tile_path):
+        info = tile_index_by_path.get(str(tile_path))
+        if info is None:
+            return None
+        year, tile_info = info
+        stack, transform, names, stats = year_data[year]
+        feats = get_dem_features_for_tile(tile_info, stack, transform)
+        return normalize_dem_features(feats, stats, names)
+
+    return provider, list(feature_names)
+
+
 def get_shadow_coverage_for_tiles(year):
     """Calcula cobertura de sombra para todos os tiles de um ano.
 

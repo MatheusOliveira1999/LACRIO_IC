@@ -682,6 +682,7 @@ def collect_pairs(feature: str, years=None, neg_ratio=1.0, shadow_neg_ratio=0.5)
     tile_paths = []
     mask_paths = []
     annotated_tile_ids = set()
+    explicit_negative_tiles = []
 
     for year in years:
         annotations_dir = Config.MASKS_DIR / str(year) / "annotations" / feature
@@ -692,30 +693,61 @@ def collect_pairs(feature: str, years=None, neg_ratio=1.0, shadow_neg_ratio=0.5)
             tile_id = mask_file.stem.replace(f"_{feature}", "")
             tile_file = Config.TILES_DIR / str(year) / f"{tile_id}.png"
 
-            if tile_file.exists():
+            if not tile_file.exists():
+                continue
+
+            annotated_tile_ids.add((year, tile_id))
+
+            # Classificar anotacao:
+            # - mascara com pixels > 127 => positiva (classe alvo)
+            # - mascara vazia => negativa explicita (GT=0)
+            mask = cv2.imread(str(mask_file), cv2.IMREAD_GRAYSCALE)
+            has_foreground = bool(mask is not None and (mask > 127).any())
+            if has_foreground:
                 tile_paths.append(tile_file)
                 mask_paths.append(mask_file)
-                annotated_tile_ids.add((year, tile_id))
+            else:
+                explicit_negative_tiles.append(tile_file)
 
     n_positives = len(tile_paths)
+    n_explicit_neg = len(explicit_negative_tiles)
     if n_positives == 0:
+        if n_explicit_neg > 0:
+            print("  [AVISO] Ha apenas mascaras vazias (GT=0) e nenhum positivo.")
+            print("  [AVISO] Treino cancelado: anote ao menos alguns tiles positivos.")
         return tile_paths, mask_paths
 
-    # Coletar amostras negativas (tiles sem anotação)
-    n_negatives = int(n_positives * neg_ratio)
+    # Alvo de negativos totais no dataset final
+    n_negatives_target = int(n_positives * neg_ratio)
+
+    # Incluir negativos explicitos (mascaras vazias anotadas manualmente),
+    # mas AMOSTRANDO quando ha muitos para evitar desbalanceamento extremo.
+    random.seed(42)
+    if n_explicit_neg > n_negatives_target:
+        explicit_selected = random.sample(explicit_negative_tiles, n_negatives_target)
+    else:
+        explicit_selected = explicit_negative_tiles
+
+    for tile_file in explicit_selected:
+        tile_paths.append(tile_file)
+        mask_paths.append(None)
+
+    # Coletar amostras negativas adicionais (tiles sem anotacao),
+    # sem ultrapassar o alvo apos usar negativos explicitos.
+    n_additional_negatives = max(0, n_negatives_target - len(explicit_selected))
 
     # Hard negatives de sombra (apenas para lakes)
     shadow_negatives = []
     n_shadow_neg = 0
-    if feature == "lakes" and shadow_neg_ratio > 0:
-        n_shadow_neg = int(n_negatives * shadow_neg_ratio)
+    if feature == "lakes" and shadow_neg_ratio > 0 and n_additional_negatives > 0:
+        n_shadow_neg = int(n_additional_negatives * shadow_neg_ratio)
         shadow_negatives = _collect_shadow_negatives(
             years, n_shadow_neg, annotated_tile_ids
         )
         n_shadow_neg = len(shadow_negatives)  # Pode ser menor que solicitado
 
     # Negativos aleatórios para completar
-    n_random_neg = n_negatives - n_shadow_neg
+    n_random_neg = max(0, n_additional_negatives - n_shadow_neg)
     all_negative_candidates = []
 
     shadow_paths_set = set(str(p) for p in shadow_negatives)
@@ -747,6 +779,8 @@ def collect_pairs(feature: str, years=None, neg_ratio=1.0, shadow_neg_ratio=0.5)
         mask_paths.append(None)
 
     print(f"  Amostras positivas: {n_positives} | "
+          f"Negativas explicitas usadas: {len(explicit_selected)} "
+          f"(pool={n_explicit_neg}) | "
           f"Negativas sombra: {n_shadow_neg} | "
           f"Negativas aleatórias: {len(random_negatives)}")
 
