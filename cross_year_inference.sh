@@ -15,8 +15,12 @@ conda activate sam_glaciar
 
 log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*" | tee -a "$RUN_DIR/main.log"; }
 
-log "==> Restaurando melhor checkpoint (6-ch F1=0.6356)"
-cp models/unet_crevasses_6ch_F1_0.5837_20260527.pth models/unet_crevasses_best.pth
+# [2026-08-09] NAO restaurar checkpoints antigos aqui. models/unet_crevasses_best.pth
+# JA E o modelo de producao (ep.125, retreino 10/06). A linha antiga
+# (cp models/unet_crevasses_6ch_F1_0.5837_20260527.pth models/unet_crevasses_best.pth)
+# sobrescrevia o modelo novo com o de 27/05 e causou as metricas cross-year defasadas.
+# Script superado por run_revalidacao_ep125.sh — mantido apenas como referencia.
+log "==> Usando checkpoint de producao models/unet_crevasses_best.pth (sem restore)"
 
 declare -A SUMMARY
 

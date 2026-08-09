@@ -119,8 +119,15 @@ def reconstruct_mosaic(feature: str, year: int, masks_subdir_suffix: str = "",
 
     print(f"  Tiles posicionados: {placed}/{len(mask_files)}")
 
-    # Obter geotransform do mosaico original de referência
-    mosaic_path = Config.get_mosaic_path(year)
+    # Obter geotransform do raster que originou os tiles (tiles_index["source"]).
+    # Fallback: mosaico nativo do ano (indices antigos sem o campo "source").
+    # Sem isso, tiles de tiles_8cm/ ganham o transform NATIVO do ano e o GeoTIFF
+    # sai com georreferenciamento errado (ex.: pixel 5.42cm numa grade de 8cm).
+    source = tiles_index.get("source")
+    if source and Path(source).exists():
+        mosaic_path = Path(source)
+    else:
+        mosaic_path = Config.get_mosaic_path(year)
 
     with rasterio.open(mosaic_path) as src:
         transform = src.transform
@@ -181,7 +188,7 @@ def reconstruct_mosaic(feature: str, year: int, masks_subdir_suffix: str = "",
         "file_size_mb": round(file_size_mb, 2),
     }
 
-    meta_path = output_dir / f"{feature}_mask_{year}_metadata.json"
+    meta_path = output_dir / f"{feature}_mask_{year}{output_suffix}_metadata.json"
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
 
