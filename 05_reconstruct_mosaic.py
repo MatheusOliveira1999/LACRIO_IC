@@ -195,6 +195,133 @@ def reconstruct_mosaic(feature: str, year: int, masks_subdir_suffix: str = "",
     return meta
 
 
+def reconstruct_mosaic_from_probs(feature: str, year: int,
+                                  masks_subdir_suffix: str = "",
+                                  output_suffix: str = "",
+                                  prob_threshold: float = 0.5):
+    """Reconstrucao por MEDIA PONDERADA de probabilidades (janela de Hann).
+
+    Motivacao (auditoria 09/08/2026): o merge np.maximum de mascaras BINARIAS
+    deixa qualquer FP de qualquer tile vencer nas zonas de overlap (25.8% do
+    mosaico), onde a precision medida cai a ~metade da precision de consenso.
+    Aqui: prob_final = sum(w*p)/sum(w) com w = Hann 2D (centro do tile pesa
+    mais que a borda), e o threshold e aplicado DEPOIS do blend.
+
+    Requer probabilidades salvas por 04_inference_unet.py --save-probs em
+    masks/{ano}/{feature}{sufixo}_probs/tile_*_probs.npy.
+    """
+    print(f"\n--- Reconstrucao (prob blend): {feature} | Ano: {year} "
+          f"| thr={prob_threshold} ---")
+
+    tiles_index_path = Config.TILES_DIR / str(year) / "tiles_index.json"
+    if not tiles_index_path.exists():
+        print(f"  [ERRO] Índice de tiles não encontrado: {tiles_index_path}")
+        return
+
+    with open(tiles_index_path) as f:
+        tiles_index = json.load(f)
+
+    original_width = tiles_index["original_width"]
+    original_height = tiles_index["original_height"]
+
+    probs_dir = Config.MASKS_DIR / str(year) / f"{feature}{masks_subdir_suffix}_probs"
+    prob_files = sorted(probs_dir.glob("tile_*_probs.npy"))
+    if not prob_files:
+        print(f"  [ERRO] Nenhum .npy em {probs_dir} — rode 04 com --save-probs.")
+        return
+    print(f"  Mapas de probabilidade: {len(prob_files)}")
+
+    tile_positions = {t["id"]: t for t in tiles_index["tiles"]}
+
+    acc = np.zeros((original_height, original_width), dtype=np.float32)
+    wsum = np.zeros((original_height, original_width), dtype=np.float32)
+    win_cache = {}
+
+    def hann2d(h, w):
+        key = (h, w)
+        if key not in win_cache:
+            wy = np.hanning(max(h, 2)).astype(np.float32)
+            wx = np.hanning(max(w, 2)).astype(np.float32)
+            win_cache[key] = np.clip(np.outer(wy, wx), 1e-6, None)
+        return win_cache[key]
+
+    placed = 0
+    for pf in tqdm(prob_files, desc=f"  Blend {feature}/{year}"):
+        tile_id = int(pf.stem.split("_")[1])
+        if tile_id not in tile_positions:
+            continue
+        pos = tile_positions[tile_id]
+        x, y = pos["x"], pos["y"]
+        probs = np.load(pf).astype(np.float32)
+        h, w = probs.shape
+        y_end = min(y + h, original_height)
+        x_end = min(x + w, original_width)
+        ph, pw = y_end - y, x_end - x
+        win = hann2d(h, w)[:ph, :pw]
+        acc[y:y_end, x:x_end] += probs[:ph, :pw] * win
+        wsum[y:y_end, x:x_end] += win
+        placed += 1
+
+    print(f"  Tiles posicionados: {placed}/{len(prob_files)}")
+
+    # Threshold pos-blend em bandas (evita temporarios de varios GB da indexacao
+    # booleana sobre canvases de ~700 Mpx)
+    mosaic = np.zeros((original_height, original_width), dtype=np.uint8)
+    band = 2048
+    for y0 in range(0, original_height, band):
+        a = acc[y0:y0 + band]
+        w = wsum[y0:y0 + band]
+        cov = w > 0
+        np.divide(a, w, out=a, where=cov)
+        mosaic[y0:y0 + band][cov & (a > prob_threshold)] = 255
+    del acc, wsum
+
+    # Georreferencia: raster que originou os tiles (mesma logica corrigida em 09/08)
+    source = tiles_index.get("source")
+    if source and Path(source).exists():
+        mosaic_path = Path(source)
+    else:
+        mosaic_path = Config.get_mosaic_path(year)
+    with rasterio.open(mosaic_path) as src:
+        transform = src.transform
+        src_crs = src.crs
+
+    output_dir = Config.RESULTS_DIR / str(year)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{feature}_mask_{year}{output_suffix}.tif"
+
+    profile = {
+        "driver": "GTiff", "dtype": "uint8",
+        "width": original_width, "height": original_height, "count": 1,
+        "crs": src_crs, "transform": transform,
+        "compress": "lzw", "tiled": True, "blockxsize": 512, "blockysize": 512,
+    }
+    with rasterio.open(output_path, "w", **profile) as dst:
+        dst.write(mosaic, 1)
+        dst.update_tags(feature=feature, year=str(year),
+                        merge="prob_cosine_hann",
+                        prob_threshold=str(prob_threshold),
+                        tiles_used=str(placed))
+
+    feature_pixels = int((mosaic > 0).sum())
+    coverage_pct = 100.0 * feature_pixels / mosaic.size
+    print(f"  GeoTIFF salvo: {output_path}")
+    print(f"  Pixels com feição: {feature_pixels:,} ({coverage_pct:.2f}% cobertura)")
+
+    meta = {
+        "feature": feature, "year": year, "output_file": str(output_path),
+        "crs": str(src_crs), "dimensions": [original_width, original_height],
+        "tiles_used": placed, "feature_pixels": feature_pixels,
+        "total_pixels": int(mosaic.size),
+        "coverage_percent": round(coverage_pct, 4),
+        "file_size_mb": round(output_path.stat().st_size / (1024 * 1024), 2),
+        "merge": "prob_cosine_hann", "prob_threshold": prob_threshold,
+    }
+    with open(output_dir / f"{feature}_mask_{year}{output_suffix}_metadata.json", "w") as f:
+        json.dump(meta, f, indent=2)
+    return meta
+
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -225,6 +352,15 @@ def main():
         "--output-suffix", type=str, default="",
         help="Sufixo no nome do GeoTIFF de saída (ex.: '_8cm' -> crevasses_mask_2016_8cm.tif)."
     )
+    parser.add_argument(
+        "--from-probs", action="store_true",
+        help="Reconstroi por media ponderada de probabilidades (janela Hann) a partir "
+             "de masks/{ano}/{feature}{sufixo}_probs/ (gerado por 04 --save-probs)."
+    )
+    parser.add_argument(
+        "--prob-threshold", type=float, default=0.5,
+        help="Threshold aplicado APOS o blend de probabilidades (so com --from-probs)."
+    )
     args = parser.parse_args()
 
     if args.tiles_dir is not None:
@@ -243,11 +379,19 @@ def main():
     results = {}
     for feature in features:
         for year in years:
-            meta = reconstruct_mosaic(
-                feature, year,
-                masks_subdir_suffix=args.masks_subdir_suffix,
-                output_suffix=args.output_suffix,
-            )
+            if args.from_probs:
+                meta = reconstruct_mosaic_from_probs(
+                    feature, year,
+                    masks_subdir_suffix=args.masks_subdir_suffix,
+                    output_suffix=args.output_suffix,
+                    prob_threshold=args.prob_threshold,
+                )
+            else:
+                meta = reconstruct_mosaic(
+                    feature, year,
+                    masks_subdir_suffix=args.masks_subdir_suffix,
+                    output_suffix=args.output_suffix,
+                )
             if meta:
                 results[f"{feature}_{year}"] = meta
 

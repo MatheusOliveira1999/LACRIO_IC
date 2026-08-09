@@ -180,7 +180,7 @@ def preprocess_image(image, img_size=512, dem_features_arr=None):
 
 
 def predict_tile_unet(model, image, img_size=512, threshold=0.5,
-                      dem_features_arr=None):
+                      dem_features_arr=None, return_probs=False):
     """Predicao U-Net para um tile. Forward pass unico."""
     h, w = image.shape[:2]
 
@@ -194,11 +194,13 @@ def predict_tile_unet(model, image, img_size=512, threshold=0.5,
     probs_full = cv2.resize(probs, (w, h), interpolation=cv2.INTER_LINEAR)
     mask = (probs_full > threshold).astype(np.uint8) * 255
 
+    if return_probs:
+        return mask, probs_full
     return mask
 
 
 def predict_tile_unet_tta(model, image, img_size=512, threshold=0.5,
-                          dem_features_arr=None):
+                          dem_features_arr=None, return_probs=False):
     """Predicao U-Net com TTA (flips). ~4x mais lento, +1-3% IoU."""
     h, w = image.shape[:2]
 
@@ -227,6 +229,8 @@ def predict_tile_unet_tta(model, image, img_size=512, threshold=0.5,
     probs_avg = probs_sum / len(transforms)
     mask = (probs_avg > threshold).astype(np.uint8) * 255
 
+    if return_probs:
+        return mask, probs_avg
     return mask
 
 
@@ -257,7 +261,8 @@ def run_inference(feature: str, year: int, threshold: float = 0.5,
                   dem_min_depth: float = -0.08,
                   dem_window_meters: float = 3.0,
                   dem_min_frac_below: float = 0.05,
-                  output_subdir_suffix: str = ""):
+                  output_subdir_suffix: str = "",
+                  save_probs: bool = False):
     """Executa inferencia U-Net em todos os tiles de um ano."""
 
     print(f"\n--- Inferencia U-Net: {feature} | Ano: {year} ---")
@@ -330,6 +335,13 @@ def run_inference(feature: str, year: int, threshold: float = 0.5,
     output_dir = Config.MASKS_DIR / str(year) / f"{feature}{output_subdir_suffix}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Mapas de probabilidade (float16) para merge ponderado no 05 (--from-probs).
+    # Salvos ANTES dos filtros pos-processamento (que operam na mascara binaria).
+    probs_dir = None
+    if save_probs:
+        probs_dir = Config.MASKS_DIR / str(year) / f"{feature}{output_subdir_suffix}_probs"
+        probs_dir.mkdir(parents=True, exist_ok=True)
+
     stats = {"total": len(tiles), "processed": 0, "with_features": 0,
              "skipped": 0, "shadow_removed": 0, "dem_removed": 0}
 
@@ -356,8 +368,15 @@ def run_inference(feature: str, year: int, threshold: float = 0.5,
         dem_feats = _dem_feats_for_tile(tile_info)
 
         # Predicao
-        mask = predict_fn(model, image, img_size=img_size, threshold=threshold,
-                          dem_features_arr=dem_feats)
+        if save_probs:
+            mask, tile_probs = predict_fn(
+                model, image, img_size=img_size, threshold=threshold,
+                dem_features_arr=dem_feats, return_probs=True)
+            np.save(probs_dir / f"tile_{tile_info['id']:06d}_probs.npy",
+                    tile_probs.astype(np.float16))
+        else:
+            mask = predict_fn(model, image, img_size=img_size, threshold=threshold,
+                              dem_features_arr=dem_feats)
 
         # Filtros pos-processamento
         if use_feature_filter:
@@ -495,6 +514,10 @@ def main():
     parser.add_argument("--tiles-dir", type=Path, default=None,
                         help="Diretorio alternativo de tiles (default: Config.TILES_DIR). "
                              "Use junto com --output-mask-suffix para nao sobrescrever predicoes.")
+    parser.add_argument("--save-probs", action="store_true",
+                        help="Salva mapa de probabilidade float16 por tile em "
+                             "masks/{ano}/{feature}{sufixo}_probs/ (para merge "
+                             "ponderado no 05_reconstruct_mosaic --from-probs).")
     parser.add_argument("--output-mask-suffix", type=str, default="",
                         help="Sufixo na pasta de saida das mascaras (ex.: '_8cm' -> "
                              "masks/{ano}/crevasses_8cm/). Default: sem sufixo.")
@@ -528,6 +551,7 @@ def main():
             dem_window_meters=args.dem_window,
             dem_min_frac_below=args.dem_min_frac_below,
             output_subdir_suffix=args.output_mask_suffix,
+            save_probs=args.save_probs,
         )
 
     elapsed = time.time() - start
