@@ -360,6 +360,19 @@ def train_one_fold(fold_idx, n_folds, train_tiles, train_masks, val_tiles, val_m
           f"F1={metrics['f1']:.4f} IoU={metrics['iou']:.4f} "
           f"P={metrics['precision']:.3f} R={metrics['recall']:.3f}")
 
+    # Salva o checkpoint do fold: habilita ensemble 5-fold e OOF per-tile post-hoc
+    # (antes o best_state vivia so em RAM e era descartado com o `del model`)
+    ckpt_dir = (Config.PROJECT_DIR / "models" / "crossval_folds"
+                / (f"{args.feature}_fp{args.fp_weight}_fn{args.fn_weight}"
+                   + ("_smoke" if getattr(args, "smoke", False) else "")))
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    torch.save({
+        "state_dict": best_state if best_state is not None else model.state_dict(),
+        "fold": fold_idx + 1, "best_epoch": best_epoch, "val_f1": best_f1,
+        "in_channels": in_channels, "dem_features": dem_feature_names,
+        "val_tiles": [str(t) for t in val_tiles],
+    }, ckpt_dir / f"fold{fold_idx + 1}.pth")
+
     del model
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -512,6 +525,8 @@ def plot_curves(curves, tag, out_dir):
 # ---------------------------------------------------------------------------
 def run_crossval(args):
     tag = f"{args.feature}_fp{args.fp_weight}_fn{args.fn_weight}"
+    if getattr(args, "smoke", False):
+        tag += "_smoke"  # smoke nunca deve sobrescrever resultados reais
     print(f"\n{'='*70}\nCROSS-VALIDATION ESPACIAL — {tag}\n{'='*70}")
     print(f"Device={Config.DEVICE} | folds={args.folds} | epochs={args.epochs} "
           f"| patience={args.patience} | block_size={args.block_size}px | "
@@ -602,6 +617,7 @@ def run_crossval(args):
     per_fold = []
     hist_pos_total = np.zeros(N_BINS)
     hist_neg_total = np.zeros(N_BINS)
+    fold_hists = []
     all_idx = set(range(len(tile_paths)))
     removed_total = 0
     for f in range(args.folds):
@@ -627,6 +643,7 @@ def run_crossval(args):
         per_fold.append(m)
         hist_pos_total += hp
         hist_neg_total += hn
+        fold_hists.append((hp, hn))
 
     if not per_fold:
         print("  [ERRO] nenhum fold valido (todos vazios ou sem positivos)."); return None
@@ -675,6 +692,13 @@ def run_crossval(args):
     }
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Arrays completos das curvas (2000 bins, total + por fold) — antes so 4 escalares
+    # sobreviviam no JSON e o sweep de threshold exigia engenharia reversa dos PNGs.
+    np.savez_compressed(
+        out_dir / f"crossval_{tag}_curves.npz",
+        hist_pos_total=hist_pos_total, hist_neg_total=hist_neg_total,
+        hist_pos_folds=np.stack([h[0] for h in fold_hists]),
+        hist_neg_folds=np.stack([h[1] for h in fold_hists]))
     json_path = out_dir / f"crossval_{tag}.json"
     with open(json_path, "w") as fp:
         json.dump(result, fp, indent=2)
