@@ -75,9 +75,9 @@ A ablação superficial (atividade 3) foi estimada por diferenciação de MDEs c
 
 ## 3.1 Validação cruzada espacial
 
-![](../results/figures/relatorio/fig01_area_estudo_cv.png){width=16cm}
+![](../results/figures/relatorio/mapa_folds_cv_qgis.png){width=16cm}
 
-*Figura 2 — Área de estudo e desenho da validação cruzada espacial: blocos de 2 048 px atribuídos aos 5 folds sobre o ortomosaico de 2016, com recortes (a–e) das morfologias de fenda cobertas. Coordenadas UTM 19S (EPSG:32719).*
+*Figura 2 — Área de estudo e desenho da validação cruzada espacial: blocos de 2 048 px atribuídos aos 5 folds sobre o ortomosaico de 2016, com recortes das morfologias de fenda cobertas por cada fold (molduras na cor do fold). Coordenadas UTM 19S (EPSG:32719).*
 
 **Tabela 1 — Métricas da validação cruzada espacial 5-fold (2016, dataset auditado).**
 
@@ -148,9 +148,9 @@ Três observações contextualizam o resultado. (i) Aplicando a correção empí
 
 *Figura 6 — Mapa das fendas supraglaciais segmentadas em 2019 (U-Net ep.107, TTA, blend probabilístico, limiar 0,6) sobre o ortomosaico de 8 cm, com contornos de elevação de 50 m e limite do glaciar. Recortes (a–d) em resolução nativa: (a) zona terminal junto ao lago proglacial, (b) campo denso central, (c) fraturas em superfície de neve da porção média, (d) fraturas finas do setor leste. n = 17.500 componentes; cobertura 1,18%; EPSG:32719 (UTM 19S).*
 
-![](../results/figures/relatorio/fig05_mascaras_4anos.png){width=16cm}
+![](../results/figures/relatorio/mapa_mascaras_4anos_qgis.png){width=16cm}
 
-*Figura 7 — Fendas segmentadas sobre os ortomosaicos de 8 cm, 2016–2019, com recortes fixos (Zoom 1 e 2) em resolução nativa. As máscaras da visão geral são espessadas por reamostragem apenas para visualização.*
+*Figura 7 — Fendas segmentadas sobre os ortomosaicos de 8 cm, 2016–2019, com zoom fixo (campo central, 158 × 96 m) em resolução nativa evidenciando a fragmentação progressiva das feições. Máscaras em vermelho; limite do glaciar em preto.*
 
 **Tabela 4 — Inventário anual de fendas (produtos finais; grade de 8 cm).**
 
@@ -191,11 +191,11 @@ Entre 2016 e 2019 a contagem de fendas cresce 40% enquanto a área total cai 16%
 
 ## 4.4 Ablação e acoplamento fendas–afinamento (atividade 3)
 
-![](../results/figures/relatorio/fig07_dh_mapas.png){width=16cm}
+![](../results/figures/relatorio/mapa_dh_qgis.png){width=16cm}
 
 *Figura 9 — dH por diferenciação de MDEs (pares 2016–17, 2017–18, 2018–19), grade de 2 m, com contornos de elevação e domínio de gelo delimitado. Co-registro validado em terreno estável (|dH| ≤ 0,04 m).*
 
-![](../results/figures/relatorio/fig06_densidade_persistencia.png){width=16cm}
+![](../results/figures/relatorio/mapa_densidade_qgis.png){width=16cm}
 
 *Figura 8 — Densidade de fendas em blocos de 100 m por ano, persistência interanual e variação 2016→2019.*
 
