@@ -225,7 +225,7 @@ No ano de afinamento máximo (2016→17), blocos mais fendilhados afinaram signi
 - *Advecção não modelada:* "fenda nova" e "persistência" são conceitos eulerianos; com fluxo de ~3 anos, a persistência lagrangiana real é subestimada (por isso reportamos a faixa 5,5–30,3%).
 - *GT interanual:* carrega viés do modelo anterior (Seção 2.2); as métricas de transferência são indicativas, e a validação primária é o CV espacial de 2016.
 - *Sensibilidade ao limiar:* comparações de cobertura entre anos variam com o limiar (0,6); as conclusões estruturais (fragmentação, migração, acoplamento) são robustas — reproduzem-se em três gerações sucessivas do modelo.
-- *Limite de detecção:* componentes < ~0,5 m² não são detectados (respondem por apenas 8% dos falsos negativos em área).
+- *Limite de detecção:* componentes < ~0,5 m² não são detectados (respondem por apenas 8% dos falsos negativos em área). A decomposição da distância de Hausdorff confirma o diagnóstico: o HD95 restrito às feições detectadas é de ~10–21 px (0,8–1,7 m), enquanto o HD95 bruto (44–90 px) é dominado por fendas finas inteiras não detectadas — o erro de cauda é de completude de detecção, não de delineação de borda.
 - *Autocorrelação espacial:* os p-valores por bloco são otimistas (n efetivo < n blocos); por isso reportamos sempre o tamanho de efeito em metros junto ao p.
 - *Série curta:* n = 4 anos não permite tendências estatísticas; as séries anuais são descritivas.
 
