@@ -42,7 +42,7 @@ Este projeto, vinculado ao edital da bolsa (atividades: 1 — processamento Agis
 
 O Glaciar Schiaparelli (~54,4°S, 70,9°W, Cordilheira Darwin, Terra do Fogo, Chile) foi levantado por VANT em campanhas anuais (2016–2020), processadas em Agisoft Metashape (atividade 1 do edital). Os produtos por ano são: ortomosaico RGB (resolução nativa 5,4–8,2 cm/pixel) e MDE (~31 cm/pixel), em EPSG:32719. Para comparabilidade interanual, os ortomosaicos 2016–2019 foram reamostrados para grade comum de **8,0 cm/pixel** e recortados em ~2 200 tiles de 512×512 pixels por ano, com sobreposição de 64 px (atividade 2). A área coberta é de ~4,3 km² (Figura 1).
 
-![](../results/figures/relatorio/mapa_area_estudo_qgis.png){width=16cm}
+![](../results/figures/relatorio/mapa_area_estudo_qgis_pag.png){width=15.3cm}
 
 *Figura 1 — Localização e área de estudo: Glaciar Schiaparelli, Cordilheira Darwin (Terra do Fogo, Chile; ~54,40°S, 70,88°W). Frame principal: ortomosaico VANT de 2016 (8 cm/pixel) com contornos de elevação de 50 m e limite do glaciar; grade de coordenadas UTM 19S (EPSG:32719). Insets: contexto continental e regional (mapa-base © OpenStreetMap/CARTO).*
 
@@ -75,7 +75,7 @@ A ablação superficial (atividade 3) foi estimada por diferenciação de MDEs c
 
 ## 3.1 Validação cruzada espacial
 
-![](../results/figures/relatorio/mapa_folds_cv_qgis.png){width=16cm}
+![](../results/figures/relatorio/mapa_folds_cv_qgis_pag.png){width=15.3cm}
 
 *Figura 2 — Área de estudo e desenho da validação cruzada espacial: blocos de 2 048 px atribuídos aos 5 folds sobre o ortomosaico de 2016, com recortes das morfologias de fenda cobertas por cada fold (molduras na cor do fold). Coordenadas UTM 19S (EPSG:32719).*
 
@@ -144,11 +144,11 @@ Três observações contextualizam o resultado. (i) Aplicando a correção empí
 
 ## 4.1 Produtos cartográficos e inventário
 
-![](../results/figures/relatorio/mapa_fendas_2019_qgis.png){width=16cm}
+![](../results/figures/relatorio/mapa_fendas_2019_qgis_pag.png){width=15.3cm}
 
 *Figura 6 — Mapa das fendas supraglaciais segmentadas em 2019 (U-Net ep.107, TTA, blend probabilístico, limiar 0,6) sobre o ortomosaico de 8 cm, com contornos de elevação de 50 m e limite do glaciar. Recortes (a–d) em resolução nativa: (a) zona terminal junto ao lago proglacial, (b) campo denso central, (c) fraturas em superfície de neve da porção média, (d) fraturas finas do setor leste. n = 17.500 componentes; cobertura 1,18%; EPSG:32719 (UTM 19S).*
 
-![](../results/figures/relatorio/mapa_mascaras_4anos_qgis.png){width=16cm}
+![](../results/figures/relatorio/mapa_mascaras_4anos_qgis_pag.png){width=15.3cm}
 
 *Figura 7 — Fendas segmentadas sobre os ortomosaicos de 8 cm, 2016–2019, com zoom fixo (campo central, 158 × 96 m) em resolução nativa evidenciando a fragmentação progressiva das feições. Máscaras em vermelho; limite do glaciar em preto.*
 
@@ -191,11 +191,11 @@ Entre 2016 e 2019 a contagem de fendas cresce 40% enquanto a área total cai 16%
 
 ## 4.4 Ablação e acoplamento fendas–afinamento (atividade 3)
 
-![](../results/figures/relatorio/mapa_dh_qgis.png){width=16cm}
+![](../results/figures/relatorio/mapa_dh_qgis_pag.png){height=22cm}
 
 *Figura 9 — dH por diferenciação de MDEs (pares 2016–17, 2017–18, 2018–19), grade de 2 m, com contornos de elevação e domínio de gelo delimitado. Co-registro validado em terreno estável (|dH| ≤ 0,04 m).*
 
-![](../results/figures/relatorio/mapa_densidade_qgis.png){width=16cm}
+![](../results/figures/relatorio/mapa_densidade_qgis_pag.png){width=15.3cm}
 
 *Figura 8 — Densidade de fendas em blocos de 100 m por ano, persistência interanual e variação 2016→2019.*
 
