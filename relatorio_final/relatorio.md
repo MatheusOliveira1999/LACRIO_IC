@@ -40,7 +40,11 @@ Este projeto, vinculado ao edital da bolsa (atividades: 1 — processamento Agis
 
 ## 2.1 Área de estudo e dados
 
-O Glaciar Schiaparelli (~54,4°S, 70,9°W, Cordilheira Darwin, Terra do Fogo, Chile) foi levantado por VANT em campanhas anuais (2016–2020), processadas em Agisoft Metashape (atividade 1 do edital). Os produtos por ano são: ortomosaico RGB (resolução nativa 5,4–8,2 cm/pixel) e MDE (~31 cm/pixel), em EPSG:32719. Para comparabilidade interanual, os ortomosaicos 2016–2019 foram reamostrados para grade comum de **8,0 cm/pixel** e recortados em ~2 200 tiles de 512×512 pixels por ano, com sobreposição de 64 px (atividade 2). A área coberta é de ~4,3 km².
+O Glaciar Schiaparelli (~54,4°S, 70,9°W, Cordilheira Darwin, Terra do Fogo, Chile) foi levantado por VANT em campanhas anuais (2016–2020), processadas em Agisoft Metashape (atividade 1 do edital). Os produtos por ano são: ortomosaico RGB (resolução nativa 5,4–8,2 cm/pixel) e MDE (~31 cm/pixel), em EPSG:32719. Para comparabilidade interanual, os ortomosaicos 2016–2019 foram reamostrados para grade comum de **8,0 cm/pixel** e recortados em ~2 200 tiles de 512×512 pixels por ano, com sobreposição de 64 px (atividade 2). A área coberta é de ~4,3 km² (Figura 1).
+
+![](../results/figures/relatorio/mapa_area_estudo_qgis.png){width=16cm}
+
+*Figura 1 — Localização e área de estudo: Glaciar Schiaparelli, Cordilheira Darwin (Terra do Fogo, Chile; ~54,40°S, 70,88°W). Frame principal: ortomosaico VANT de 2016 (8 cm/pixel) com contornos de elevação de 50 m e limite do glaciar; grade de coordenadas UTM 19S (EPSG:32719). Insets: contexto continental e regional (mapa-base © OpenStreetMap/CARTO).*
 
 ## 2.2 Anotação e auditoria de rótulos
 
@@ -57,9 +61,9 @@ O modelo é uma **U-Net com encoder ResNet-34** (pesos ImageNet) e **seis canais
 
 ## 2.4 Protocolo de avaliação
 
-A avaliação principal é uma **validação cruzada espacial 5-fold com zona de exclusão** (Roberts et al., 2017): os tiles são agrupados em blocos espaciais de 2 048 px e todo tile de treinamento cujo enquadramento sobrepõe qualquer tile de validação é removido do fold (Fig. 1). Esse desenho elimina o vazamento por autocorrelação espacial que infla métricas sob particionamento aleatório — efeito medido em +14,6 a +27,9% de F1 para CNNs em ortoimagens de VANT (Kattenborn et al., 2022). Complementarmente: transferência temporal (modelo de 2016 aplicado a 2017–2019 sem re-treinamento) e métricas com tolerância espacial de 4 px (~32 cm), seguindo a convenção de estruturas lineares finas (clIoU@4px do benchmark OmniCrack30k; "relaxed precision/recall" com ρ = 3 px na literatura de extração de estradas desde Wiedemann et al., 1998).
+A avaliação principal é uma **validação cruzada espacial 5-fold com zona de exclusão** (Roberts et al., 2017): os tiles são agrupados em blocos espaciais de 2 048 px e todo tile de treinamento cujo enquadramento sobrepõe qualquer tile de validação é removido do fold (Fig. 2). Esse desenho elimina o vazamento por autocorrelação espacial que infla métricas sob particionamento aleatório — efeito medido em +14,6 a +27,9% de F1 para CNNs em ortoimagens de VANT (Kattenborn et al., 2022). Complementarmente: transferência temporal (modelo de 2016 aplicado a 2017–2019 sem re-treinamento) e métricas com tolerância espacial de 4 px (~32 cm), seguindo a convenção de estruturas lineares finas (clIoU@4px do benchmark OmniCrack30k; "relaxed precision/recall" com ρ = 3 px na literatura de extração de estradas desde Wiedemann et al., 1998).
 
-Na inferência de produção usa-se **TTA** (média de 4 orientações; +0,9 p.p. em precisão, revocação e F1), **limiar 0,6** (centro do platô da curva OOF; Fig. 2) e **reconstrução do mosaico por média de probabilidades ponderada por janela de Hann** — que substitui o mosaico por máximo binário, cuja precisão nas zonas de sobreposição de tiles (25,8% da área) cai para 0,39 contra 0,72 nas zonas de consenso; o blend recupera +1,7 p.p. de precisão no produto final (−8,9% de pixels de falso positivo).
+Na inferência de produção usa-se **TTA** (média de 4 orientações; +0,9 p.p. em precisão, revocação e F1), **limiar 0,6** (centro do platô da curva OOF; Fig. 3) e **reconstrução do mosaico por média de probabilidades ponderada por janela de Hann** — que substitui o mosaico por máximo binário, cuja precisão nas zonas de sobreposição de tiles (25,8% da área) cai para 0,39 contra 0,72 nas zonas de consenso; o blend recupera +1,7 p.p. de precisão no produto final (−8,9% de pixels de falso positivo).
 
 ## 2.5 Análises glaciológicas
 
@@ -73,7 +77,7 @@ A ablação superficial (atividade 3) foi estimada por diferenciação de MDEs c
 
 ![](../results/figures/relatorio/fig01_area_estudo_cv.png){width=16cm}
 
-*Figura 1 — Área de estudo e desenho da validação cruzada espacial: blocos de 2 048 px atribuídos aos 5 folds sobre o ortomosaico de 2016, com recortes (a–e) das morfologias de fenda cobertas. Coordenadas UTM 19S (EPSG:32719).*
+*Figura 2 — Área de estudo e desenho da validação cruzada espacial: blocos de 2 048 px atribuídos aos 5 folds sobre o ortomosaico de 2016, com recortes (a–e) das morfologias de fenda cobertas. Coordenadas UTM 19S (EPSG:32719).*
 
 **Tabela 1 — Métricas da validação cruzada espacial 5-fold (2016, dataset auditado).**
 
@@ -104,7 +108,7 @@ A ablação superficial (atividade 3) foi estimada por diferenciação de MDEs c
 
 ![](../results/figures/relatorio/fig02_curvas_prf1_threshold.png){width=11cm}
 
-*Figura 2 — Precisão, revocação e F1 em função do limiar de binarização (curvas out-of-fold; banda = ±1 dp entre folds). O platô de F1 entre 0,45 e 0,70 permite escolher o ponto operacional pela precisão; o limiar de produção (0,6) está marcado.*
+*Figura 3 — Precisão, revocação e F1 em função do limiar de binarização (curvas out-of-fold; banda = ±1 dp entre folds). O platô de F1 entre 0,45 e 0,70 permite escolher o ponto operacional pela precisão; o limiar de produção (0,6) está marcado.*
 
 O F1 espacial de 0,654 ± 0,014 é estável entre folds (0,628–0,669) e a transferência temporal não degrada (0,66–0,72 em 2017–2019, com precisão uniformizada em ~0,67) — evidência de que o modelo de um único ano, com canais topográficos e augmentação cromática dirigida, generaliza entre condições de superfície muito distintas (neve fresca em 2017; gelo exposto em 2018/2019).
 
@@ -112,11 +116,11 @@ O F1 espacial de 0,654 ± 0,014 é estável entre folds (0,628–0,669) e a tran
 
 ![](../results/figures/relatorio/fig03_qualitativa.png){width=15cm}
 
-*Figura 3 — Avaliação qualitativa em cenas representativas (ortofoto | referência manual | predição | sobreposição): (a) fendas largas com detritos, F1 = 0,91; (b) fraturas finas em gelo limpo, F1 = 0,90; (c) campo denso de fraturas, F1 = 0,70; (d) fendas sob neve — falso negativo difícil, R = 0,33; (e) seracs e sombra, R = 0,35. Convenção de cores fixa: referência em turquesa, predição em azul.*
+*Figura 4 — Avaliação qualitativa em cenas representativas (ortofoto | referência manual | predição | sobreposição): (a) fendas largas com detritos, F1 = 0,91; (b) fraturas finas em gelo limpo, F1 = 0,90; (c) campo denso de fraturas, F1 = 0,70; (d) fendas sob neve — falso negativo difícil, R = 0,33; (e) seracs e sombra, R = 0,35. Convenção de cores fixa: referência em turquesa, predição em azul.*
 
 ![](../results/figures/relatorio/fig04_falsos_positivos.png){width=15cm}
 
-*Figura 4 — Modos típicos de falso positivo: sombras de relevo, morenas/detritos escuros, canais supraglaciais, textura de neve. 68,6% dos pixels de falso positivo situam-se a ≤ 4 px (~32 cm) da referência — o erro dominante é ambiguidade de borda, não detecção espúria.*
+*Figura 5 — Modos típicos de falso positivo: sombras de relevo, morenas/detritos escuros, canais supraglaciais, textura de neve. 68,6% dos pixels de falso positivo situam-se a ≤ 4 px (~32 cm) da referência — o erro dominante é ambiguidade de borda, não detecção espúria.*
 
 ## 3.3 Posicionamento na literatura
 
@@ -140,9 +144,13 @@ Três observações contextualizam o resultado. (i) Aplicando a correção empí
 
 ## 4.1 Produtos cartográficos e inventário
 
+![](../results/figures/relatorio/mapa_fendas_2019_qgis.png){width=16cm}
+
+*Figura 6 — Mapa das fendas supraglaciais segmentadas em 2019 (U-Net ep.107, TTA, blend probabilístico, limiar 0,6) sobre o ortomosaico de 8 cm, com contornos de elevação de 50 m e limite do glaciar. Recortes (a–d) em resolução nativa: (a) zona terminal junto ao lago proglacial, (b) campo denso central, (c) fraturas em superfície de neve da porção média, (d) fraturas finas do setor leste. n = 17.500 componentes; cobertura 1,18%; EPSG:32719 (UTM 19S).*
+
 ![](../results/figures/relatorio/fig05_mascaras_4anos.png){width=16cm}
 
-*Figura 5 — Fendas segmentadas sobre os ortomosaicos de 8 cm, 2016–2019, com recortes fixos (Zoom 1 e 2) em resolução nativa. As máscaras da visão geral são espessadas por reamostragem apenas para visualização.*
+*Figura 7 — Fendas segmentadas sobre os ortomosaicos de 8 cm, 2016–2019, com recortes fixos (Zoom 1 e 2) em resolução nativa. As máscaras da visão geral são espessadas por reamostragem apenas para visualização.*
 
 **Tabela 4 — Inventário anual de fendas (produtos finais; grade de 8 cm).**
 
@@ -153,17 +161,17 @@ Três observações contextualizam o resultado. (i) Aplicando a correção empí
 | 2018 | 14 885 | 12 939 | 63,5 | 1,48 | 1,52 | 5,6 | 138,9 |
 | 2019 | 17 500 | 14 131 | 50,6 | 1,18 | 0,65 | 3,8 | 129,9 |
 
-*A cobertura anual é sensível ao limiar de binarização (0,6) e às condições de superfície de cada voo; as comparações interanuais robustas são as de contagem por classe de tamanho, geometria e distribuição espacial (Fig. 10–12).*
+*A cobertura anual é sensível ao limiar de binarização (0,6) e às condições de superfície de cada voo; as comparações interanuais robustas são as de contagem por classe de tamanho, geometria e distribuição espacial (Fig. 12–14).*
 
 ![](../results/figures/relatorio/fig12_evolucao_anual.png){width=12cm}
 
-*Figura 12 — Série anual (n = 4): contagem, área total, cobertura e altitude mediana, com envelope de incerteza derivado da precisão/revocação da validação (aproximação conservadora).*
+*Figura 14 — Série anual (n = 4): contagem, área total, cobertura e altitude mediana, com envelope de incerteza derivado da precisão/revocação da validação (aproximação conservadora).*
 
 ## 4.2 Fragmentação e morfometria
 
 ![](../results/figures/relatorio/fig10_morfometria.png){width=15cm}
 
-*Figura 10 — Distribuições de área e comprimento (bins logarítmicos), ECDF e larguras por ano.*
+*Figura 12 — Distribuições de área e comprimento (bins logarítmicos), ECDF e larguras por ano.*
 
 Entre 2016 e 2019 a contagem de fendas cresce 40% enquanto a área total cai 16%: o crescimento vem **inteiramente das classes pequenas** (fendas < 1 m² passam de 2 984 para 6 554 — de 29,6% para 46,4% da população; χ² = 958, p ≈ 10⁻²⁰⁷), enquanto as classes > 5 m² perdem 745 feições e ~12,8 mil m². As dimensões medianas encolhem sistematicamente (área −57%: 2,72 → 1,18 m²; comprimento −41%; largura −29%; KS p < 10⁻¹⁵⁰; δ de Cliff 0,22–0,25), com razão de aspecto estável (~10 → 9). As fendas grandes de 2019 são majoritariamente persistentes de 2016, enquanto as pequenas combinam fraturamento novo e subdivisão — no conjunto, **fragmentação progressiva da rede**.
 
@@ -171,11 +179,11 @@ Entre 2016 e 2019 a contagem de fendas cresce 40% enquanto a área total cai 16%
 
 ![](../results/figures/relatorio/fig08_hipsometria.png){width=13cm}
 
-*Figura 8 — dH, densidade de fendas e distribuição de elevação das fendas por banda de 50 m.*
+*Figura 10 — dH, densidade de fendas e distribuição de elevação das fendas por banda de 50 m.*
 
 ![](../results/figures/relatorio/fig11_rosetas_orientacao.png){width=15cm}
 
-*Figura 11 — Orientação axial das fendas por ano (rosetas espelhadas, raio ∝ √frequência).*
+*Figura 13 — Orientação axial das fendas por ano (rosetas espelhadas, raio ∝ √frequência).*
 
 - **Expansão para montante:** 55–63% das fendas de 2019 (conforme critério de correspondência) não têm correspondente de 2016 e concentram-se a montante — elevação mediana ~18 m maior e ~250 m mais distantes do terminus que as persistentes (Mann-Whitney, p ≈ 10⁻¹²¹). A elevação mediana do conjunto cai apenas 2,7 m enquanto a superfície afinou ~9,5 m acumulados — a produção de fendas novas a montante compensa o rebaixamento.
 - **Renovação do campo:** apenas 5,5% (sobreposição estrita) a 30,3% (tolerância ~1 m) da área de fendas de 2019 já era fenda em 2016 — renovação quase completa em 3 anos, combinando advecção (não modelada) e abertura de novas fraturas.
@@ -185,11 +193,11 @@ Entre 2016 e 2019 a contagem de fendas cresce 40% enquanto a área total cai 16%
 
 ![](../results/figures/relatorio/fig07_dh_mapas.png){width=16cm}
 
-*Figura 7 — dH por diferenciação de MDEs (pares 2016–17, 2017–18, 2018–19), grade de 2 m, com contornos de elevação e domínio de gelo delimitado. Co-registro validado em terreno estável (|dH| ≤ 0,04 m).*
+*Figura 9 — dH por diferenciação de MDEs (pares 2016–17, 2017–18, 2018–19), grade de 2 m, com contornos de elevação e domínio de gelo delimitado. Co-registro validado em terreno estável (|dH| ≤ 0,04 m).*
 
 ![](../results/figures/relatorio/fig06_densidade_persistencia.png){width=16cm}
 
-*Figura 6 — Densidade de fendas em blocos de 100 m por ano, persistência interanual e variação 2016→2019.*
+*Figura 8 — Densidade de fendas em blocos de 100 m por ano, persistência interanual e variação 2016→2019.*
 
 **Tabela 5 — Correlação densidade de fendas × dH em blocos de 100 m (domínio de gelo).** *Valores não significativos (p ≥ 0,05) em itálico.*
 
@@ -209,7 +217,7 @@ Entre 2016 e 2019 a contagem de fendas cresce 40% enquanto a área total cai 16%
 
 ![](../results/figures/relatorio/fig09_scatter_densidade_dh.png){width=16cm}
 
-*Figura 9 — Densidade de fendas × dH em blocos de 100 m, por par de anos, com ρ, p e n anotados. Os resultados nulos são mostrados com o mesmo desenho — o caráter episódico do acoplamento é o achado.*
+*Figura 11 — Densidade de fendas × dH em blocos de 100 m, por par de anos, com ρ, p e n anotados. Os resultados nulos são mostrados com o mesmo desenho — o caráter episódico do acoplamento é o achado.*
 
 No ano de afinamento máximo (2016→17), blocos mais fendilhados afinaram significativamente mais: gelo sem fendas perdeu −4,25 m contra −6,21 m no quartil superior de densidade — **um afinamento extra de ~2 m associado ao fendilhamento**, robusto ao controle de elevação e à escala de bloco (100–200 m). Nos anos de afinamento moderado o acoplamento desaparece (2018→19) ou inverte fracamente (2017→18), sugerindo modulação climática do mecanismo. Em bandas altitudinais a correlação some (ρ agregado = +0,06): a variabilidade relevante da densidade é **transversal ao fluxo**, na escala de centenas de metros — um resultado metodológico em si, pois o desenho de análise mais comum (bandas de elevação) não detectaria o acoplamento. Este conjunto endereça diretamente a lacuna apontada por Colgan et al. (2016).
 
