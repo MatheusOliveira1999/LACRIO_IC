@@ -147,3 +147,12 @@ debug_*.png
 
 # Artigos cientificos e outros PDFs (manter local, nao versionar)
 *.pdf
+
+# Documentos Word gerados (relatorios) e modelos de formulario
+*.docx
+*.doc
+!relatorio_final/ref_a4.docx
+relatorio_final/pg-04.jpg
+
+# Notas, figuras de trabalho e artigos (local; fonte autoritativa = vault)
+docs/

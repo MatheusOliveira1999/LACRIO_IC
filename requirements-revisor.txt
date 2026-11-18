@@ -1,0 +1,11 @@
+# requirements-revisor.txt - minimo para abrir o anotador (annotate.py) em modo
+# manual, sem PyTorch. Suficiente para revisar/anotar mascaras.
+#
+#   pip install -r requirements-revisor.txt
+#
+# O tkinter vem com o Python no Windows/macOS; no Linux pode ser preciso
+# instalar o pacote do sistema (ex.: sudo apt install python3-tk).
+
+numpy>=1.24.0
+opencv-python>=4.8.0
+pillow>=10.0.0

@@ -12,26 +12,68 @@
 
 ---
 
-## Fase atual (mai/2026): foco em fendas no ano de 2016 — ✅ VALIDADA
+## Estado atual (set/2026): fendas, treino em 2016, teste em blocos nunca vistos
 
-Esta fase tem **escopo deliberadamente reduzido**:
+Escopo: apenas `crevasses` (fendas); treino **somente com 2016**; o mesmo modelo é aplicado a 2017–2019 sem re-treino.
 
-1. **Trabalhar apenas com `crevasses` (fendas).** Lakes e channels ficam fora do ciclo.
-2. **Treinar exclusivamente com dados de 2016** — ano de referência.
-3. **Generalização temporal:** usar o modelo bem treinado em 2016 para **inferir nos demais anos (2017–2020)** sem re-treinar.
+Modelo U-Net **6 canais** (RGB + relief + slope + curvature do DEM). Gabarito revisado de 2016: **218 recortes** (144 com fenda + 74 conferidos sem fenda).
 
-### Resultado (27/05/2026)
+| Teste | Precisão | Revocação | F1 |
+|-------|----:|----:|----:|
+| **2016, validação cruzada espacial 5-fold** (blocos nunca vistos) | 0,627 | 0,703 | **0,661 ± 0,018** |
+| 2016, segunda divisão dos blocos | — | — | 0,663 ± 0,030 |
+| 2016, com folga de 4 px (32 cm) na borda | 0,836 | 0,856 | 0,846 |
+| 2017 / 2018 / 2019, um modelo (cross-year) | 0,67 | 0,66–0,75 | 0,679 / 0,708 / 0,664 |
+| 2017 / 2018 / 2019, comitê de 10 modelos | 0,65–0,68 | 0,71–0,80 | 0,689 / 0,714 / 0,702 |
 
-Modelo U-Net **6-canal** (RGB + relief + slope + curvature do DEM), treinado SOMENTE em 2016 com 42 tiles GT:
+> **Nota:** versões anteriores deste README traziam F1 de 0,83–0,87 nos anos 2017–2019. Esses valores eram otimistas (a avaliação era circular) e foram substituídos pelos números acima. Detalhes em [`relatorio_final/relatorio.md`](relatorio_final/relatorio.md).
 
-| Ano | F1 | IoU | Precision | Recall |
-|-----|----:|----:|----:|----:|
-| 2016 (treino) | **0.6356** | 0.4658 | 0.5417 | 0.7688 |
-| 2017 (cross-year) | **0.8318** | 0.7120 | 0.7552 | 0.9256 |
-| 2018 (cross-year) | **0.8746** | 0.7771 | 0.8253 | 0.9301 |
-| 2019 (cross-year) | **0.8369** | 0.7196 | 0.7524 | 0.9429 |
+O principal limite hoje é o gabarito, não a rede: a auto-concordância do anotador (re-anotação às cegas de 15 recortes) é F1 0,583 estrito / 0,785 com folga de 4 px. Por isso a etapa em andamento é a **revisão das anotações por um segundo revisor** (seção abaixo).
 
-**Supera baseline anterior** (modelo de 4 anos: F1 0.71–0.78 em cada ano) treinando em **1 ano em 23 min**.
+---
+
+## Guia do revisor de anotações
+
+Para revisar as máscaras de fendas **não é preciso GPU nem PyTorch** — só Python e três bibliotecas leves.
+
+**1. Instalar o Python 3.10 ou mais novo** ([python.org](https://www.python.org/downloads/); no Windows, marcar *Add Python to PATH*).
+
+**2. Baixar o código** — `git clone https://github.com/MatheusOliveira1999/LACRIO_IC.git`, ou botão verde *Code → Download ZIP* e extrair.
+
+**3. Baixar os dados** — as imagens e máscaras não ficam no GitHub. O arquivo `LACRIO_IC_dados_revisor.zip` (~120 MB; 335 recortes anotados de 2016–2019 + máscaras) é enviado à parte pelo Matheus. **Extraia-o dentro da pasta do projeto**: devem aparecer as pastas `tiles/` e `masks/` ao lado do `annotate.py`.
+
+**4. Instalar as dependências** (terminal aberto na pasta do projeto):
+
+```bash
+pip install -r requirements-revisor.txt
+```
+
+**5. Abrir o anotador em modo revisão** (um ano por vez; 2016 tem 218 recortes, os demais ~40 cada):
+
+```bash
+python annotate.py --feature crevasses --year 2016 --review --no-model
+```
+
+A máscara atual aparece em vermelho sobre a imagem. Corrija o que for preciso e avance.
+
+| Ação | Controle |
+|------|----------|
+| Pintar fenda | botão esquerdo |
+| Apagar | botão direito |
+| Tamanho do pincel | scroll (ou `+` / `-`) |
+| Zoom / mover / resetar | `Ctrl`+scroll / botão do meio + arrastar / `0` |
+| Alternar modo linha/pixel | `L` |
+| Desfazer última pincelada | `Z` |
+| **Salvar e ir ao próximo** | `Enter` ou `Espaço` |
+| Pular sem salvar | `S` |
+| Marcar "sem fenda" (máscara vazia) | `R` |
+| Sair | `Q` ou `Esc` |
+
+O trabalho pode ser feito em várias sessões: tudo que foi salvo com `Enter` fica gravado em `masks/`.
+
+**6. Devolver** — compactar a pasta `masks/` e enviar ao Matheus.
+
+*(Para o Matheus: o pacote de dados é gerado por `python empacota_dados_revisor.py`.)*
 
 ---
 
@@ -86,10 +128,16 @@ LACRIO_IC/
 ├── annotate.py                # Anotação manual (pincel + zoom + revisão)
 ├── active_learning.py         # Seleção de tiles para anotar (strategy random)
 ├── check_empty_masks.py       # Limpa máscaras com 0 pixels (bug histórico)
+├── 10_crossval_curves.py      # Validação cruzada espacial + curvas PR/ROC
+├── 13_intra_anotador.py       # Consistência intra-anotador (re-anotação às cegas)
+├── 16_oof_ensemble_eval.py    # Avaliação do comitê (ensemble) fora da amostra
+├── 17_compare_oof.py          # Comparação pareada entre versões (bootstrap + Wilcoxon)
+├── empacota_dados_revisor.py  # Gera o zip de dados para o revisor externo
 ├── shadow_utils.py            # Hillshade DEM para filtro de sombra
 ├── generate_report_pdf.py     # Gera relatório PDF
 ├── archive/                   # Scripts SAM-era (descontinuados em abr/2026)
-├── docs/                      # Plano C-TransUNet + paper + archive/
+├── report_figs/               # Scripts das figuras do relatório
+├── relatorio_final/           # Relatório final (fonte .md + scripts de build)
 ├── Schiaparelli_glacier/      # Mosaicos + DEMs (não versionado)
 ├── tiles/                     # Tiles gerados
 ├── masks/                     # Anotações + predições
@@ -99,15 +147,17 @@ LACRIO_IC/
 
 ---
 
-## Instalação
+## Instalação (pipeline completo)
+
+Para apenas revisar anotações, ver o [Guia do revisor](#guia-do-revisor-de-anotações) — não precisa de nada disto.
 
 ```bash
 git clone https://github.com/MatheusOliveira1999/LACRIO_IC.git
 cd LACRIO_IC
 
-conda create -n sam_glaciar python=3.10 -y
-conda activate sam_glaciar
-conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia
+conda create -n lacrio python=3.10 -y
+conda activate lacrio
+# PyTorch: usar o comando para a sua GPU/CPU em https://pytorch.org
 pip install -r requirements.txt
 ```
 
@@ -158,8 +208,7 @@ done
 |--------|--------|-----------|----------|
 | Wallace et al. (2025) — SAM 2 zero-shot | Crevasses | drone | IoU 0,28 |
 | Chai et al. (2025) — SAM adapted | Lagos | Sentinel-2 | F1 0,88 |
-| Este projeto (U-Net 4 anos, 04/05/2026) | Crevasses | drone 5,4 cm/px | F1 0,71–0,78 (2017–2019) |
-| **Este projeto (U-Net 6-canal só 2016, 27/05/2026)** | Crevasses | drone 5,4 cm/px | **F1 0,83–0,87 (2017–2019)** · IoU 0,71–0,78 |
+| **Este projeto (U-Net 6 canais, treino só em 2016, set/2026)** | Crevasses | drone, 8 cm/px | **F1 0,661 ± 0,018** (CV espacial) · 0,69–0,71 em 2017–2019 (comitê) |
 
 *Caveat: comparação com Wallace 2025 não é direta — zero-shot vs fine-tuned, domínios geográficos diferentes (Svalbard vs Patagônia), critério de anotação não comparável.*
 
@@ -167,8 +216,7 @@ done
 
 ## Documentação
 
-- `docs/PLANO_IMPLEMENTACAO_ARTIGO_CTRANSUNET_3D.md` — roadmap futuro (geometria 2D/3D, strain)
-- `docs/archive/` — relatórios e diagnósticos da fase SAM
+- [`relatorio_final/relatorio.md`](relatorio_final/relatorio.md) — relatório final da IC (método, resultados, limites)
 - **Vault Obsidian** (`~/Documents/obsidian/LACRIO/`) — progresso, decisões técnicas e definições estritas de cada feição
 
 ---

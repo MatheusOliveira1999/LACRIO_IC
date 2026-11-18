@@ -32,13 +32,30 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
-import torch
-
 from config import Config
-import importlib
-_inf = importlib.import_module("04_inference_unet")
-load_unet = _inf.load_unet
-preprocess_image = _inf.preprocess_image
+
+# PyTorch e opcional: sem ele o anotador abre em modo manual (sem sugestao do
+# modelo), o que basta para revisar/anotar em outro computador.
+try:
+    import torch
+    import importlib
+    _inf = importlib.import_module("04_inference_unet")
+    load_unet = _inf.load_unet
+    preprocess_image = _inf.preprocess_image
+    MODEL_STACK_OK = True
+except ImportError as _e:
+    torch = None
+    load_unet = preprocess_image = None
+    MODEL_STACK_OK = False
+    _MODEL_STACK_ERR = _e
+
+
+def _resolve_tile_path(tile_path, year, tile_id):
+    """Caminho do tile; se o do CSV nao existir (ex.: caminho absoluto de outra
+    maquina), cai para tiles/{ano}/{tile_id}.png dentro do projeto."""
+    if tile_path and Path(tile_path).exists():
+        return str(tile_path)
+    return str(Config.TILES_DIR / str(year) / f"{tile_id}.png")
 
 
 # ============================================================================
@@ -113,7 +130,8 @@ def load_tile_list(feature, year=None, csv_path=None, review=False):
                 tiles.append({
                     "tile_id": row["tile_id"],
                     "year": int(row["year"]),
-                    "tile_path": row["tile_path"],
+                    "tile_path": _resolve_tile_path(
+                        row.get("tile_path", ""), int(row["year"]), row["tile_id"]),
                     "score": float(row.get("uncertainty_score", 0)),
                 })
     else:
@@ -150,6 +168,9 @@ def load_tile_list(feature, year=None, csv_path=None, review=False):
     return result
 
 
+_inf_thr = [0.5]  # limiar da sugestao (ajustavel por --pred-threshold)
+
+
 def get_model_prediction(model, img_size, tile_path, dem_provider=None):
     """Roda U-Net e retorna mapa de probabilidade.
 
@@ -168,7 +189,7 @@ def get_model_prediction(model, img_size, tile_path, dem_provider=None):
         logits = model(tensor)
         prob = torch.sigmoid(logits[0, 0]).cpu().numpy()
     prob_full = cv2.resize(prob, (w, h), interpolation=cv2.INTER_LINEAR)
-    pred_mask = (prob_full > 0.5).astype(np.uint8) * 255
+    pred_mask = (prob_full > _inf_thr[0]).astype(np.uint8) * 255
     return image, pred_mask
 
 
@@ -737,6 +758,11 @@ def main():
                         help="Modo revisao: abre tiles JA anotados para corrigir/apagar")
     parser.add_argument("--no-model", action="store_true",
                         help="Abre anotador em modo manual, sem carregar U-Net.")
+    parser.add_argument("--ensemble-dir", type=str, default=None,
+                        help="Pasta com fold*.pth: a sugestao passa a ser o ensemble "
+                             "(folds + producao), mais preciso (+7 pp P cross-year).")
+    parser.add_argument("--pred-threshold", type=float, default=0.5,
+                        help="Limiar da sugestao do modelo (ensemble: use 0.4).")
     args = parser.parse_args()
 
     print("Carregando lista de tiles...")
@@ -757,10 +783,16 @@ def main():
     model = None
     img_size = 512
     dem_provider = None
+    if not args.no_model and not MODEL_STACK_OK:
+        print(f"⚠️  PyTorch/modelo indisponivel ({_MODEL_STACK_ERR}).")
+        print("⚠️  Continuando em modo manual (sem predicao do modelo).")
+        args.no_model = True
     if not args.no_model:
         print("Carregando modelo U-Net...")
         try:
-            model, img_size, in_channels, dem_features, dem_window = load_unet(args.feature)
+            model, img_size, in_channels, dem_features, dem_window = load_unet(
+                args.feature, ensemble_dir=args.ensemble_dir)
+            _inf_thr[0] = args.pred_threshold
             model.eval()
             if in_channels > 3 and dem_features:
                 from shadow_utils import build_dem_provider
