@@ -579,6 +579,121 @@ class BCETverskyLoss(nn.Module):
         return self.bce_weight * bce + self.tversky_weight * tversky
 
 
+# ---------------------------------------------------------------------------
+# clDice (Shit et al., CVPR 2021) — termo topologico para estruturas lineares.
+# Soft-skeleton por erosoes/aberturas diferenciaveis (min/max-pool), como no
+# repositorio oficial (jocpae/clDice, soft_skeleton.py, versao 2D).
+# ---------------------------------------------------------------------------
+
+def _soft_erode(img):
+    p1 = -F.max_pool2d(-img, (3, 1), (1, 1), (1, 0))
+    p2 = -F.max_pool2d(-img, (1, 3), (1, 1), (0, 1))
+    return torch.min(p1, p2)
+
+
+def _soft_dilate(img):
+    return F.max_pool2d(img, (3, 3), (1, 1), (1, 1))
+
+
+def _soft_open(img):
+    return _soft_dilate(_soft_erode(img))
+
+
+def soft_skeleton(img, iters):
+    """Esqueleto suave de um mapa de probabilidade (N,1,H,W) em [0,1].
+
+    iters ~ metade da largura maxima (em px) das estruturas que se quer
+    esqueletizar por completo. Fendas a 8 cm/px: largura mediana ~6 px,
+    cauda ate ~20 px -> iters 5-10.
+    """
+    img1 = _soft_open(img)
+    skel = F.relu(img - img1)
+    for _ in range(iters):
+        img = _soft_erode(img)
+        img1 = _soft_open(img)
+        delta = F.relu(img - img1)
+        skel = skel + F.relu(delta - skel * delta)
+    return skel
+
+
+def soft_cldice(probs, targets, iters=5, smooth=1.0):
+    """1 - clDice suave (topology precision x topology sensitivity)."""
+    skel_pred = soft_skeleton(probs, iters)
+    skel_true = soft_skeleton(targets, iters)
+    tprec = (torch.sum(skel_pred * targets) + smooth) / (torch.sum(skel_pred) + smooth)
+    tsens = (torch.sum(skel_true * probs) + smooth) / (torch.sum(skel_true) + smooth)
+    cl_dice = 2.0 * tprec * tsens / (tprec + tsens)
+    return 1.0 - cl_dice
+
+
+class BCETverskyClDiceLoss(nn.Module):
+    """(1 - alpha) * [BCE + Tversky]  +  alpha * (1 - softclDice).
+
+    Mesma composicao do paper do clDice (L = (1-a)*L_base + a*L_clDice,
+    a em [0, 0.5]); L_base aqui e a loss de producao (0.3 BCE + 0.7 Tversky).
+    Ataca a super-segmentacao: tprec penaliza esqueleto predito fora do GT.
+    """
+
+    def __init__(self, alpha=0.25, iters=5, bce_weight=0.3, tversky_weight=0.7,
+                 fp_weight=0.7, fn_weight=0.3, warmup_epochs=0, additive=False):
+        super().__init__()
+        self.alpha = alpha
+        self.iters = iters
+        self.warmup_epochs = warmup_epochs  # epocas iniciais SO com a loss base
+        self.additive = additive            # True: base + a*cld (base nao e reduzida)
+        self.epoch = 1
+        self.base = BCETverskyLoss(bce_weight=bce_weight, tversky_weight=tversky_weight,
+                                   fp_weight=fp_weight, fn_weight=fn_weight)
+
+    def set_epoch(self, epoch):
+        self.epoch = epoch
+
+    def forward(self, logits, targets):
+        base = self.base(logits, targets)
+        if self.epoch <= self.warmup_epochs:
+            return base
+        probs = torch.sigmoid(logits)
+        cld = soft_cldice(probs, targets, iters=self.iters)
+        if self.additive:
+            return base + self.alpha * cld
+        return (1.0 - self.alpha) * base + self.alpha * cld
+
+
+class BCETverskyClCELoss(nn.Module):
+    """base (BCE+Tversky) + w * clCE  — centerline cross-entropy (Acebes et al., MICCAI 2024).
+
+    clCE = mean(BCE_pix * skel(GT)) + mean(BCE_pix * skel(pred)): log-loss concentrada nos
+    pixels do esqueleto do GT (recall de centerline) E do esqueleto PREDITO (penaliza
+    esqueleto predito fora do GT = falso positivo alongado). Replica o Code 1 do repo
+    oficial (cesaracebes/centerline_CE): iters=3, .mean() sobre todos os pixels, sem detach.
+    Unica loss de esqueleto que sobe Dice E clDice juntos nas fontes verificadas.
+    """
+
+    def __init__(self, weight=1.0, iters=3, bce_weight=0.3, tversky_weight=0.7,
+                 fp_weight=0.7, fn_weight=0.3, warmup_epochs=0):
+        super().__init__()
+        self.weight = weight
+        self.iters = iters
+        self.warmup_epochs = warmup_epochs
+        self.epoch = 1
+        self.base = BCETverskyLoss(bce_weight=bce_weight, tversky_weight=tversky_weight,
+                                   fp_weight=fp_weight, fn_weight=fn_weight)
+
+    def set_epoch(self, epoch):
+        self.epoch = epoch
+
+    def forward(self, logits, targets):
+        base = self.base(logits, targets)
+        if self.epoch <= self.warmup_epochs:
+            return base
+        l_pix = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+        probs = torch.sigmoid(logits)
+        st = soft_skeleton(targets, self.iters)
+        sp = soft_skeleton(probs, self.iters)
+        clce = (l_pix * st).mean() + (l_pix * sp).mean()
+        return base + self.weight * clce
+
+
 # ============================================================================
 # Metricas
 # ============================================================================
@@ -619,6 +734,9 @@ def train(feature: str, epochs: int = 100, lr: float = 1e-4,
           shadow_neg_ratio: float = 0.5, years=None,
           freeze_encoder: bool = False, patience: int = None,
           loss: str = "bce_dice", fp_weight: float = 0.7, fn_weight: float = 0.3,
+          cldice_alpha: float = 0.25, cldice_iters: int = 5,
+          cldice_warmup: int = 0, cldice_additive: bool = False,
+          clce_weight: float = 1.0, init_from: str = None,
           use_dem_channels: bool = False,
           dem_features=("relief", "slope", "curvature"),
           dem_window_meters: float = 3.0):
@@ -632,7 +750,8 @@ def train(feature: str, epochs: int = 100, lr: float = 1e-4,
     print(f"Img size: {img_size}x{img_size}")
     print(f"Augmentation: {'SIM' if use_augment else 'NAO'}")
     print(f"Neg ratio: {neg_ratio} | Shadow neg: {shadow_neg_ratio}")
-    print(f"Loss: {loss}" + (f" (fp_weight={fp_weight}, fn_weight={fn_weight})" if loss == "bce_tversky" else ""))
+    print(f"Loss: {loss}" + (f" (fp_weight={fp_weight}, fn_weight={fn_weight})" if loss.startswith("bce_tversky") else "")
+          + (f" + clDice(alpha={cldice_alpha}, iters={cldice_iters})" if loss == "bce_tversky_cldice" else ""))
     print(f"Anos usados no treino: {years if years else Config.YEARS}")
     print(f"DEM channels: {'SIM (' + ','.join(dem_features) + ')' if use_dem_channels else 'NAO'}")
 
@@ -713,6 +832,11 @@ def train(feature: str, epochs: int = 100, lr: float = 1e-4,
     # Modelo
     print(f"\n[2/3] Inicializando U-Net (ResNet34 encoder, in_channels={in_channels})...")
     model = UNetResNet34(pretrained=True, in_channels=in_channels).to(Config.DEVICE)
+    if init_from:
+        _ck = torch.load(init_from, map_location='cpu', weights_only=False)
+        _sd = _ck.get('model_state_dict', _ck.get('state_dict', _ck))
+        model.load_state_dict(_sd)
+        print(f'  [INIT] pesos carregados de {init_from}')
 
     if freeze_encoder:
         _encoder_prefixes = ("enc0.", "enc1.", "enc2.", "enc3.", "enc4.", "pool0.")
@@ -744,7 +868,18 @@ def train(feature: str, epochs: int = 100, lr: float = 1e-4,
         optimizer, T_max=max(1, epochs - warmup_epochs), eta_min=lr * 0.01
     )
 
-    if loss == "bce_tversky":
+    if loss == "bce_tversky_clce":
+        criterion = BCETverskyClCELoss(weight=clce_weight, iters=cldice_iters,
+                                       bce_weight=0.3, tversky_weight=0.7,
+                                       fp_weight=fp_weight, fn_weight=fn_weight,
+                                       warmup_epochs=cldice_warmup)
+    elif loss == "bce_tversky_cldice":
+        criterion = BCETverskyClDiceLoss(alpha=cldice_alpha, iters=cldice_iters,
+                                         bce_weight=0.3, tversky_weight=0.7,
+                                         fp_weight=fp_weight, fn_weight=fn_weight,
+                                         warmup_epochs=cldice_warmup,
+                                         additive=cldice_additive)
+    elif loss == "bce_tversky":
         criterion = BCETverskyLoss(bce_weight=0.3, tversky_weight=0.7,
                                    fp_weight=fp_weight, fn_weight=fn_weight)
     else:
@@ -764,6 +899,10 @@ def train(feature: str, epochs: int = 100, lr: float = 1e-4,
     start = time.time()
 
     for epoch in range(1, epochs + 1):
+
+        if hasattr(criterion, 'set_epoch'):
+
+            criterion.set_epoch(epoch)
         # Warmup LR (aplica ao decoder; encoder mantém 0.1x)
         if epoch <= warmup_epochs:
             warmup_lr = lr * epoch / warmup_epochs
@@ -918,9 +1057,24 @@ def main():
     parser.add_argument("--patience", type=int, default=None,
                         help="Paciencia do early stopping. Default: Config.EARLY_STOPPING_PATIENCE.")
     parser.add_argument("--loss", type=str, default="bce_dice",
-                        choices=["bce_dice", "bce_tversky"],
+                        choices=["bce_dice", "bce_tversky", "bce_tversky_cldice",
+                                 "bce_tversky_clce"],
                         help="Funcao de loss. bce_tversky penaliza FP mais que FN "
-                             "(recomendado para crevasses com oversegmentacao).")
+                             "(recomendado para crevasses com oversegmentacao). "
+                             "bce_tversky_cldice adiciona termo topologico clDice "
+                             "(Shit et al. 2021) contra super-segmentacao.")
+    parser.add_argument("--cldice-alpha", type=float, default=0.25,
+                        help="Peso do termo clDice (0-0.5). So com --loss bce_tversky_cldice.")
+    parser.add_argument("--cldice-iters", type=int, default=5,
+                        help="Iteracoes do soft-skeleton (~metade da largura max. em px).")
+    parser.add_argument("--cldice-warmup", type=int, default=0,
+                        help="Epocas iniciais so com BCE+Tversky antes de ligar o clDice.")
+    parser.add_argument("--cldice-additive", action="store_true",
+                        help="Loss = base + alpha*clDice (nao reduz a base por 1-alpha).")
+    parser.add_argument("--clce-weight", type=float, default=1.0,
+                        help="Peso do termo clCE (so com --loss bce_tversky_clce). Usa --cldice-iters.")
+    parser.add_argument("--init-from", type=str, default=None,
+                        help="Checkpoint (.pth) para inicializar os pesos (fine-tune em 2 fases).")
     parser.add_argument("--fp-weight", type=float, default=0.7,
                         help="Peso dos falsos positivos no Tversky Loss (default: 0.7). "
                              "Maior = mais conservador = maior precisao.")
@@ -952,6 +1106,12 @@ def main():
         loss=args.loss,
         fp_weight=args.fp_weight,
         fn_weight=args.fn_weight,
+        cldice_alpha=args.cldice_alpha,
+        cldice_iters=args.cldice_iters,
+        cldice_warmup=args.cldice_warmup,
+        cldice_additive=args.cldice_additive,
+        clce_weight=args.clce_weight,
+        init_from=args.init_from,
         use_dem_channels=args.use_dem_channels,
         dem_features=tuple(args.dem_features),
         dem_window_meters=args.dem_window,

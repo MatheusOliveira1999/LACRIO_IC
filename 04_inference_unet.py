@@ -115,8 +115,27 @@ def apply_feature_filter(mask, image, feature,
     return filtered
 
 
-def load_unet(feature: str):
-    """Carrega U-Net treinada. Detecta in_channels e DEM features do checkpoint."""
+class EnsembleUNet(torch.nn.Module):
+    """Media das probabilidades de varios modelos, devolvida como LOGIT da media
+    (assim `sigmoid(model(x))` no restante do pipeline continua valido)."""
+
+    def __init__(self, members):
+        super().__init__()
+        self.members = torch.nn.ModuleList(members)
+
+    def forward(self, x):
+        p = torch.stack([torch.sigmoid(m(x)) for m in self.members]).mean(0)
+        p = p.clamp(1e-6, 1 - 1e-6)
+        return torch.log(p / (1 - p))
+
+
+def load_unet(feature: str, ensemble_dir=None, include_production=True):
+    """Carrega U-Net treinada. Detecta in_channels e DEM features do checkpoint.
+
+    ensemble_dir: pasta com fold*.pth (10_crossval_curves.py). Se dada, devolve um
+    EnsembleUNet = media dos folds (+ o modelo de producao, se include_production).
+    Validado cross-year 2017-19 (05/09/2026): F1 +1.6 pp, P +7 pp, clIoU@4px +5 pp vs ep.107.
+    """
     checkpoint_path = Config.MODELS_DIR / f"unet_{feature}_best.pth"
     if not checkpoint_path.exists():
         raise FileNotFoundError(
@@ -143,6 +162,20 @@ def load_unet(feature: str):
     print(f"  Input: {img_size}x{img_size} | in_channels: {in_channels}")
     if dem_features:
         print(f"  DEM channels: {','.join(dem_features)} (window {dem_window}m)")
+
+    if ensemble_dir:
+        members = [model] if include_production else []
+        for fp in sorted(Path(ensemble_dir).glob("fold*.pth")):
+            ck = torch.load(fp, map_location="cpu", weights_only=False)
+            if ck.get("in_channels", 3) != in_channels:
+                raise ValueError(f"{fp.name}: in_channels {ck.get('in_channels')} != {in_channels}")
+            m = UNetResNet34(pretrained=False, in_channels=in_channels)
+            m.load_state_dict(ck["state_dict"])
+            m.to(Config.DEVICE).eval()
+            members.append(m)
+        model = EnsembleUNet(members).to(Config.DEVICE).eval()
+        print(f"  ENSEMBLE: {len(members)} modelos (folds de {Path(ensemble_dir).name}"
+              f"{' + producao' if include_production else ''}) — media de probabilidades")
 
     return model, img_size, in_channels, dem_features, dem_window
 
@@ -262,7 +295,8 @@ def run_inference(feature: str, year: int, threshold: float = 0.5,
                   dem_window_meters: float = 3.0,
                   dem_min_frac_below: float = 0.05,
                   output_subdir_suffix: str = "",
-                  save_probs: bool = False):
+                  save_probs: bool = False,
+                  ensemble_dir=None, ensemble_no_production: bool = False):
     """Executa inferencia U-Net em todos os tiles de um ano."""
 
     print(f"\n--- Inferencia U-Net: {feature} | Ano: {year} ---")
@@ -306,7 +340,8 @@ def run_inference(feature: str, year: int, threshold: float = 0.5,
             print(f"  [AVISO] DEM filter solicitado mas relief nao carregou. Continuando sem.")
 
     # Carregar modelo (detecta in_channels e DEM features pelo checkpoint)
-    model, img_size, in_channels, ckpt_dem_features, ckpt_dem_window = load_unet(feature)
+    model, img_size, in_channels, ckpt_dem_features, ckpt_dem_window = load_unet(
+        feature, ensemble_dir=ensemble_dir, include_production=not ensemble_no_production)
 
     # Pre-computar DEM features se o checkpoint usa canais extras
     dem_features_stack = None
@@ -470,7 +505,8 @@ def run_inference(feature: str, year: int, threshold: float = 0.5,
                   f"{t['f1']:>7.3f} {t['gt_area']:>7} {t['pred_area']:>7}")
 
         # Salvar resultados
-        results_path = Config.RESULTS_DIR / f"unet_validation_{feature}_{year}.json"
+        # sufixo no JSON tambem: um run com --output-mask-suffix (ex. _ens) nao sobrescreve o oficial
+        results_path = Config.RESULTS_DIR / f"unet_validation_{feature}_{year}{output_subdir_suffix}.json"
         Config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         with open(results_path, "w") as f:
             json.dump({
@@ -518,6 +554,12 @@ def main():
                         help="Salva mapa de probabilidade float16 por tile em "
                              "masks/{ano}/{feature}{sufixo}_probs/ (para merge "
                              "ponderado no 05_reconstruct_mosaic --from-probs).")
+    parser.add_argument("--ensemble-dir", type=Path, default=None,
+                        help="Pasta com fold*.pth (ex.: models/crossval_folds/crevasses_fp0.7_fn0.3): "
+                             "media de probabilidades dos folds + modelo de producao. "
+                             "Recomendado com --tta e --threshold 0.4-0.5.")
+    parser.add_argument("--ensemble-no-production", action="store_true",
+                        help="Ensemble so com os folds (sem o unet_<feature>_best.pth).")
     parser.add_argument("--output-mask-suffix", type=str, default="",
                         help="Sufixo na pasta de saida das mascaras (ex.: '_8cm' -> "
                              "masks/{ano}/crevasses_8cm/). Default: sem sufixo.")
@@ -552,6 +594,8 @@ def main():
             dem_min_frac_below=args.dem_min_frac_below,
             output_subdir_suffix=args.output_mask_suffix,
             save_probs=args.save_probs,
+            ensemble_dir=args.ensemble_dir,
+            ensemble_no_production=args.ensemble_no_production,
         )
 
     elapsed = time.time() - start

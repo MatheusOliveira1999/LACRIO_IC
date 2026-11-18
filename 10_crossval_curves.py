@@ -246,7 +246,41 @@ def build_model_and_optim(in_channels, lr, epochs):
     return model, optimizer, scheduler, warmup
 
 
+def run_tag(args):
+    """Tag unica do experimento (usada no JSON, npz, figuras e checkpoints)."""
+    tag = f"{args.feature}_fp{args.fp_weight}_fn{args.fn_weight}"
+    if args.loss == "bce_tversky_cldice":
+        tag += f"_cldice{args.cldice_alpha}_it{args.cldice_iters}"
+        if args.cldice_additive:
+            tag += "add"
+        if args.cldice_warmup:
+            tag += f"_wu{args.cldice_warmup}"
+    elif args.loss == "bce_tversky_clce":
+        tag += f"_clce{args.clce_weight}_it{args.cldice_iters}"
+        if args.cldice_warmup:
+            tag += f"_wu{args.cldice_warmup}"
+    if getattr(args, "tag_suffix", ""):
+        tag += args.tag_suffix
+    elif args.loss == "bce_dice":
+        tag += "_bcedice"
+    if getattr(args, "smoke", False):
+        tag += "_smoke"  # smoke nunca deve sobrescrever resultados reais
+    return tag
+
+
 def make_criterion(args):
+    if args.loss == "bce_tversky_clce":
+        return TU.BCETverskyClCELoss(
+            weight=args.clce_weight, iters=args.cldice_iters,
+            bce_weight=0.3, tversky_weight=0.7,
+            fp_weight=args.fp_weight, fn_weight=args.fn_weight,
+            warmup_epochs=args.cldice_warmup)
+    if args.loss == "bce_tversky_cldice":
+        return TU.BCETverskyClDiceLoss(
+            alpha=args.cldice_alpha, iters=args.cldice_iters,
+            bce_weight=0.3, tversky_weight=0.7,
+            fp_weight=args.fp_weight, fn_weight=args.fn_weight,
+            warmup_epochs=args.cldice_warmup, additive=args.cldice_additive)
     if args.loss == "bce_tversky":
         return TU.BCETverskyLoss(bce_weight=0.3, tversky_weight=0.7,
                                  fp_weight=args.fp_weight, fn_weight=args.fn_weight)
@@ -298,6 +332,15 @@ def train_one_fold(fold_idx, n_folds, train_tiles, train_masks, val_tiles, val_m
         dem_provider, dem_feature_names)
     model, optimizer, scheduler, warmup = build_model_and_optim(
         in_channels, args.lr, args.epochs)
+    if args.init_from_dir:
+        # Fine-tune em 2 fases: parte do checkpoint do MESMO fold (mesmo split) de um CV anterior
+        ck_path = Path(args.init_from_dir) / f"fold{fold_idx + 1}.pth"
+        ck = torch.load(ck_path, map_location="cpu", weights_only=False)
+        assert [Path(t).name for t in ck["val_tiles"]] == [Path(t).name for t in val_tiles], \
+            f"val_tiles do checkpoint {ck_path} nao batem com o fold atual (split diferente!)"
+        model.load_state_dict(ck["state_dict"])
+        print(f"  [INIT] fold {fold_idx+1}: pesos de {ck_path} (best ep {ck.get('best_epoch')}, "
+              f"val_f1 {ck.get('val_f1', float('nan')):.4f}); mesmo split confirmado")
     criterion = make_criterion(args)
 
     n_train_pos = sum(1 for m in train_masks if m is not None)
@@ -313,6 +356,8 @@ def train_one_fold(fold_idx, n_folds, train_tiles, train_masks, val_tiles, val_m
     device = Config.DEVICE
 
     for epoch in range(1, args.epochs + 1):
+        if hasattr(criterion, "set_epoch"):
+            criterion.set_epoch(epoch)
         if epoch <= warmup:
             wlr = args.lr * epoch / warmup
             for i, pg in enumerate(optimizer.param_groups):
@@ -362,9 +407,7 @@ def train_one_fold(fold_idx, n_folds, train_tiles, train_masks, val_tiles, val_m
 
     # Salva o checkpoint do fold: habilita ensemble 5-fold e OOF per-tile post-hoc
     # (antes o best_state vivia so em RAM e era descartado com o `del model`)
-    ckpt_dir = (Config.PROJECT_DIR / "models" / "crossval_folds"
-                / (f"{args.feature}_fp{args.fp_weight}_fn{args.fn_weight}"
-                   + ("_smoke" if getattr(args, "smoke", False) else "")))
+    ckpt_dir = Config.PROJECT_DIR / "models" / "crossval_folds" / run_tag(args)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     torch.save({
         "state_dict": best_state if best_state is not None else model.state_dict(),
@@ -524,9 +567,7 @@ def plot_curves(curves, tag, out_dir):
 # Driver de uma configuracao (um conjunto de pesos fp/fn)
 # ---------------------------------------------------------------------------
 def run_crossval(args):
-    tag = f"{args.feature}_fp{args.fp_weight}_fn{args.fn_weight}"
-    if getattr(args, "smoke", False):
-        tag += "_smoke"  # smoke nunca deve sobrescrever resultados reais
+    tag = run_tag(args)
     print(f"\n{'='*70}\nCROSS-VALIDATION ESPACIAL — {tag}\n{'='*70}")
     print(f"Device={Config.DEVICE} | folds={args.folds} | epochs={args.epochs} "
           f"| patience={args.patience} | block_size={args.block_size}px | "
@@ -622,6 +663,8 @@ def run_crossval(args):
     removed_total = 0
     for f in range(args.folds):
         val_idx = folds[f]
+        if args.only_folds and (f + 1) not in args.only_folds:
+            continue  # paralelismo entre processos: cada um treina um subconjunto de folds
         if not val_idx:
             print(f"  [fold {f+1}] vazio, pulado")
             continue
@@ -665,6 +708,11 @@ def run_crossval(args):
 
     out_dir = Config.RESULTS_DIR / "crossval"
     fig_dir = Config.RESULTS_DIR / "figures" / "crossval"
+    if args.only_folds:
+        # resultado PARCIAL (subconjunto de folds): nao sobrescreve o JSON completo.
+        # A agregacao honesta dos 5 folds e feita depois pelo 16_oof_ensemble_eval.py
+        # a partir dos checkpoints (que guardam val_tiles).
+        tag = tag + "_folds" + "-".join(str(k) for k in sorted(args.only_folds))
     fig_path = plot_curves(curves, tag, fig_dir)
 
     result = {
@@ -674,6 +722,11 @@ def run_crossval(args):
             "epochs": args.epochs, "patience": args.patience,
             "block_size_px": args.block_size, "loss": args.loss,
             "fp_weight": args.fp_weight, "fn_weight": args.fn_weight,
+            "cldice_alpha": (args.cldice_alpha if args.loss == "bce_tversky_cldice" else None),
+            "cldice_iters": (args.cldice_iters if args.loss == "bce_tversky_cldice" else None),
+            "cldice_warmup": args.cldice_warmup, "cldice_additive": args.cldice_additive,
+            "clce_weight": (args.clce_weight if args.loss == "bce_tversky_clce" else None),
+            "init_from_dir": args.init_from_dir, "tag_suffix": args.tag_suffix, "lr": args.lr,
             "neg_ratio": args.neg_ratio, "use_dem_channels": args.use_dem_channels,
             "in_channels": in_channels, "n_tiles": len(tile_paths), "n_positives": n_pos,
             "n_blocks": n_blocks, "n_effective_folds": n_effective_folds,
@@ -762,7 +815,22 @@ def main():
     ap.add_argument("--block-size", type=int, default=2048,
                     help="Tamanho do bloco espacial em px (CV em blocos). Grande o "
                          "bastante p/ separar tiles vizinhos com overlap. Default 2048.")
-    ap.add_argument("--loss", default="bce_tversky", choices=["bce_dice", "bce_tversky"])
+    ap.add_argument("--loss", default="bce_tversky",
+                    choices=["bce_dice", "bce_tversky", "bce_tversky_cldice", "bce_tversky_clce"])
+    ap.add_argument("--cldice-alpha", type=float, default=0.25,
+                    help="Peso do termo clDice (so com --loss bce_tversky_cldice)")
+    ap.add_argument("--cldice-iters", type=int, default=5,
+                    help="Iteracoes do soft-skeleton do clDice")
+    ap.add_argument("--cldice-warmup", type=int, default=0,
+                    help="Epocas iniciais so com a loss base antes de ligar o clDice")
+    ap.add_argument("--cldice-additive", action="store_true",
+                    help="Loss = base + alpha*clDice em vez de (1-alpha)*base + alpha*clDice")
+    ap.add_argument("--clce-weight", type=float, default=1.0,
+                    help="Peso do termo clCE (--loss bce_tversky_clce); iters via --cldice-iters")
+    ap.add_argument("--init-from-dir", type=str, default=None,
+                    help="Dir com fold{k}.pth de um CV anterior (mesmo split) para fine-tune")
+    ap.add_argument("--tag-suffix", type=str, default="",
+                    help="Sufixo da tag (JSON/npz/figura/checkpoints) — ex.: _ft25")
     ap.add_argument("--fp-weight", type=float, default=0.7)
     ap.add_argument("--fn-weight", type=float, default=0.3)
     ap.add_argument("--use-dem-channels", action="store_true")
@@ -779,6 +847,9 @@ def main():
     ap.add_argument("--compare-weights", action="store_true",
                     help="Roda CV para fp/fn=0.7/0.3 E 0.3/0.7 e compara (experimento "
                          "de balanceamento). Ignora --fp-weight/--fn-weight.")
+    ap.add_argument("--only-folds", type=int, nargs="+", default=None,
+                    help="Treina so estes folds (1-based). Permite rodar folds em "
+                         "processos paralelos na mesma GPU; JSON sai com sufixo _foldsK.")
     ap.add_argument("--smoke", action="store_true",
                     help="Teste rapido: folds=2, epochs=2, patience=2, max-tiles=40.")
     args = ap.parse_args()
