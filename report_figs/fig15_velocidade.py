@@ -3,8 +3,8 @@
 Analogo honesto da Fig. S1 de Duan et al. 2025: como 79% da superficie
 decorrelaciona no intervalo anual, mostramos os vetores QC-aprovados (setas
 coloridas por magnitude, viridis) sobre hillshade — nao um raster interpolado.
-Painel (b): velocidade vs posicao ao longo do eixo de fluxo (proxy: UTM Leste;
-a frente/lago fica a oeste), evidenciando a lingua terminal mais lenta.
+Painel (b): velocidade vs distancia a partir da frente (proxy: UTM Leste; a frente/lago
+fica a oeste e o gelo anda de leste para oeste), evidenciando a lingua terminal mais lenta.
 """
 import csv
 import json
@@ -49,11 +49,14 @@ gs = fig.add_gridspec(1, 2, width_ratios=[1.75, 1], wspace=0.24)
 ax = fig.add_subplot(gs[0])
 ax.imshow(hs, extent=ext, cmap='gray', vmin=30, vmax=230, zorder=0)
 ax.plot(ring[:, 0], ring[:, 1], 'k-', lw=0.9, zorder=2)
+# ponto em todo vetor: setas lentas (< ~30 m/ano) ficam com 1-2 px e as de 0 m/ano nao aparecem
+ax.scatter(X, Y, c=sp, cmap='viridis', vmin=0, vmax=150, s=9, edgecolors='white',
+           linewidths=0.35, zorder=3)
 q = ax.quiver(X, Y, u, -v, sp, cmap='viridis', clim=(0, 150),
-              scale=2600, width=0.004, zorder=3)
-ax.quiverkey(q, 0.86, -0.13, 100, '100 m a⁻¹', labelpos='E', fontproperties={'size': 7})
+              scale=2600, width=0.004, zorder=4)
+ax.quiverkey(q, 0.86, -0.13, 100, '100 m/ano', labelpos='E', fontproperties={'size': 7})
 cb = fig.colorbar(q, ax=ax, shrink=0.55, pad=0.012)
-cb.set_label('Velocidade (m a⁻¹)', fontsize=8); cb.ax.tick_params(labelsize=7)
+cb.set_label('Velocidade (m/ano)', fontsize=8); cb.ax.tick_params(labelsize=7)
 ax.set_xlim(376900, 379300); ax.set_ylim(3969800, 3971700)
 ax.set_xlabel('Leste UTM 19S (m)', fontsize=8)
 ax.set_ylabel('Norte UTM 19S (m)', fontsize=8)
@@ -64,25 +67,35 @@ ax.annotate('N', xy=(0.95, 0.93), xycoords='axes fraction', fontsize=11,
 ax.annotate('▲', xy=(0.95, 0.885), xycoords='axes fraction', fontsize=9, ha='center')
 ax.plot([377050, 377550], [3969900, 3969900], 'k-', lw=2.5)
 ax.text(377300, 3969935, '500 m', ha='center', fontsize=7)
-ax.text(377280, 3970490, 'lago\nproglacial', fontsize=7, style='italic', color='#333')
-ax.set_title(f'(a) Vetores de velocidade 2018→2019\n(n = {len(u)} no QC; decorrelação 79%)', fontsize=8, pad=3)
+ax.text(377330, 3970130, 'lago', fontsize=7, style='italic', color='#222', ha='center',
+        bbox=dict(fc='white', ec='none', alpha=0.75, pad=1), zorder=4)
+ax.set_title(f'(a) Movimento do gelo 2018→2019 ({len(u)} pontos)\nponto = local medido; seta = para onde o gelo anda', fontsize=8, pad=3)
 
 ax2 = fig.add_subplot(gs[1])
 dist = (X - 377250)  # proxy: distancia ao longo do eixo E-W a partir da frente
-sc = ax2.scatter(dist, sp, c=sp, cmap='viridis', vmin=0, vmax=150, s=14,
-                 edgecolors='k', linewidths=0.2)
-med_lo = np.median(sp[dist < np.median(dist)])
-med_hi = np.median(sp[dist >= np.median(dist)])
-ax2.axhline(med_lo, color='#888', lw=0.8, ls='--')
-ax2.axhline(med_hi, color='#888', lw=0.8, ls=':')
-ax2.text(0.02, med_lo + 4, f'mediana metade O (frente): {med_lo:.0f}', fontsize=6.5,
-         transform=ax2.get_yaxis_transform())
-ax2.text(0.02, med_hi + 4, f'mediana metade L (montante): {med_hi:.0f}', fontsize=6.5,
-         transform=ax2.get_yaxis_transform())
-ax2.set_xlabel('Distância da frente ao longo do\neixo de fluxo O→L (m, proxy)', fontsize=8)
-ax2.set_ylabel('Velocidade (m a⁻¹)', fontsize=8)
+# pontos a < 100 m do limite do glaciar: quase todos parados (0-20 m/ano); separados do interior
+from shapely.geometry import Point, shape
+geo = shape(outline['features'][0]['geometry'])
+borda = np.array([geo.exterior.distance(Point(a, b)) < 100 for a, b in zip(X, Y)])
+frente = dist < np.median(dist)
+med_fr = np.median(sp[~borda & frente])
+med_ci = np.median(sp[~borda & ~frente])
+ax2.scatter(dist[borda], sp[borda], s=14, facecolors='none', edgecolors='#666', linewidths=0.7,
+            label=f'borda (< 100 m do limite): {borda.sum()} pontos,\nmediana {np.median(sp[borda]):.0f} m/ano')
+sc = ax2.scatter(dist[~borda], sp[~borda], c=sp[~borda], cmap='viridis', vmin=0, vmax=150, s=14,
+                 edgecolors='k', linewidths=0.2,
+                 label=f'interior: {(~borda).sum()} pontos, mediana {med_fr:.0f} m/ano\n'
+                       f'na metade perto da frente e {med_ci:.0f} m/ano na de cima')
+ax2.legend(loc='upper center', bbox_to_anchor=(0.45, -0.16), fontsize=6.3, frameon=False,
+           handletextpad=0.3, labelspacing=0.6)
+ax2.set_xlabel('Distância a partir da frente (m)\n(0 = frente, a oeste; cresce para leste)', fontsize=7.5)
+ax2.annotate('', xy=(0.55, 0.40), xytext=(0.95, 0.40), xycoords='axes fraction',
+             arrowprops=dict(arrowstyle='-|>', color='#333', lw=1.0))
+ax2.text(0.75, 0.42, 'o gelo anda neste\nsentido (para a frente)', transform=ax2.transAxes, fontsize=6.5,
+         va='bottom', ha='center', color='#333')
+ax2.set_ylabel('Velocidade (m/ano)', fontsize=8)
 ax2.tick_params(labelsize=7)
-ax2.set_title('(b) Velocidade × posição no fluxo', fontsize=8.5)
+ax2.set_title('(b) Velocidade × distância da frente', fontsize=8.5)
 ax2.grid(alpha=0.25, lw=0.4)
 
 fig.savefig(f'{REPO}/results/figures/relatorio/fig15_velocidade.png',
